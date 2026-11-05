@@ -7,7 +7,7 @@ import { test, run, eq, throws, near, setFile } from "./harness.mjs";
 import { formatUnits, formatPROS, formatGwei, percent, groupDigits, toBigInt, parseUnits, InputError } from "../src/numbers.mjs";
 import { minimalFees, projectCost, advise } from "../src/cost.mjs";
 import { validateRequest } from "../src/analyze.mjs";
-import { buildPaymentRow, analysePayments, waitingVerdict } from "../src/fees.mjs";
+import { buildPaymentRow, analysePayments, waitingVerdict, capacityFromBlocks, headroomBand, congestionLevel } from "../src/fees.mjs";
 
 setFile("unit");
 const GWEI = 1_000_000_000n;
@@ -298,6 +298,96 @@ test("waiting is unproven when nobody was included without a tip", () => {
 test("waiting claims nothing without base fee history", () => {
   eq(waitingVerdict({ baseFee: null, analyse: null }).canHelp, null);
   eq(waitingVerdict({ baseFee: { distinctCount: null }, analyse: null }).canHelp, null);
+});
+
+// ── gas capacity ─────────────────────────────────────────────────────────────
+//
+// The inherited version reported `round(1/max)`, a peak over 32 consecutive
+// blocks. On the live chain that produced 2,071x, 4,065x, 4,921x, 6,141x and
+// once 359x — the same chain, the same claim, quoted to four digits and wrong by
+// up to 17x. These tests pin the replacement: aggregate demand, banded to a
+// power of ten, and never a fabricated figure when nothing was used.
+
+const blk = (number, used, limit = 1_000_000_000n) => ({
+  number,
+  gasUsed: BigInt(used),
+  gasLimit: BigInt(limit),
+});
+
+test("capacity is aggregate demand, not a mean of per-block ratios", () => {
+  // Two blocks, wildly different limits: 50% of a big block and 0% of a small one.
+  // Mean-of-ratios would say 25%; total demand over total capacity says 49.99%.
+  const c = capacityFromBlocks([blk(1, 500_000_000, 1_000_000_000), blk(2, 0, 1_000n)]);
+  eq(c.aggregateUtilisation > 0.49 && c.aggregateUtilisation < 0.5, true, `got ${c.aggregateUtilisation}`);
+  eq(c.peakUtilisation, 0.5);
+});
+
+test("empty blocks are counted, not averaged away", () => {
+  const c = capacityFromBlocks([blk(10, 0), blk(11, 0), blk(12, 0), blk(13, 1_000)]);
+  eq(c.emptyCount, 3);
+  eq(c.emptyShare, 0.75);
+  eq(c.blocksSampled, 4);
+});
+
+test("peak names the block it came from so the claim is checkable", () => {
+  const c = capacityFromBlocks([blk(100, 10), blk(101, 900), blk(102, 500)]);
+  eq(c.peakBlock, 101);
+  eq(c.spanBlocks, 3);
+});
+
+test("headroom is banded to a power of ten, so it stops wobbling", () => {
+  // All of these are "about ten thousand x". The old code printed 13599 and
+  // 22153 for the same claim; both now band to the same figure.
+  for (const u of [0.0000735, 0.0000524, 0.0000999, 0.0000451]) {
+    eq(headroomBand(u), 10_000, `utilisation ${u}`);
+  }
+  eq(headroomBand(0.02), 10);
+  eq(headroomBand(0.05), 10);
+  eq(headroomBand(0.5), null, "2x is under an order of magnitude, so no band claim");
+});
+
+test("zero utilisation reports no figure rather than an invented one", () => {
+  // The old code returned headroomX: null here, which the UI rendered as "n/a" —
+  // the emptiest possible chain read as "unknown", the worst possible reading.
+  const c = capacityFromBlocks([blk(1, 0), blk(2, 0)]);
+  eq(c.aggregateUtilisation, 0);
+  eq(c.headroomAtLeastX, null);
+  eq(c.emptyCount, 2);
+  eq(c.congestion, "no-queue", "no gas used means no queue, not unknown");
+});
+
+test("congestion separates no-queue from contended", () => {
+  eq(congestionLevel(0.00007), "no-queue");
+  eq(congestionLevel(0.2), "light");
+  eq(congestionLevel(0.8), "contended");
+  eq(congestionLevel(null), "unknown");
+});
+
+test("capacity with no readable blocks says so instead of reporting zeros", () => {
+  const c = capacityFromBlocks([], { failed: 12 });
+  eq(c.blocksSampled, 0);
+  eq(c.aggregateUtilisation, null);
+  eq(c.headroomAtLeastX, null);
+  eq(c.congestion, "unknown");
+  eq(c.failedBlocks, 12, "the failures travel with the result");
+});
+
+test("capacity keeps raw totals so percentages can be computed exactly", () => {
+  const c = capacityFromBlocks([blk(1, 3), blk(2, 7, 10n)]);
+  eq(c.gasUsedTotal, "10");
+  eq(c.gasLimitTotal, "1000000010");
+});
+
+test("waiting cites gas demand from the same blocks", () => {
+  const v = waitingVerdict({
+    baseFee: frozenMarket,
+    analyse: { measured: true, zeroTipShare: "74", transactions: 773 },
+    capacity: capacityFromBlocks([blk(1, 0), blk(2, 0), blk(3, 600_000, 1_000_000_000n)]),
+  });
+  eq(v.canHelp, false);
+  const cited = v.reasons.join(" ");
+  eq(cited.includes("of capacity across 3 blocks"), true, cited);
+  eq(cited.includes("2 of them using no gas at all"), true, cited);
 });
 
 const failures = await run();

@@ -16,6 +16,11 @@ import { InputError } from "../../src/numbers.mjs";
 const MAX_SAMPLE = 60;
 const DEFAULT_SAMPLE = 40;
 
+// Blocks between sampled headers. 60 blocks at this spacing covers ~47k blocks:
+// wide enough that the sample is not one burst of activity, cheap enough that the
+// analysis stays inside the worker subrequest budget.
+const SAMPLE_STRIDE = 800;
+
 const json = (body, status) =>
   new Response(JSON.stringify(body, null, 2), {
     status,
@@ -49,7 +54,7 @@ export async function onRequestPost({ request, env }) {
   const rpc = createRpc({ url: env?.PHAROS_RPC || undefined, retries: 1, timeoutMs: 12000 });
 
   try {
-    const report = await analyze({ rpc, request: tx, sampleBlocks });
+    const report = await analyze({ rpc, request: tx, sampleBlocks, stride: SAMPLE_STRIDE });
     return json(
       {
         ...report,
@@ -79,3 +84,7 @@ export async function onRequestPost({ request, env }) {
 export async function onRequestGet() {
   return json({ error: "use POST with a transaction description" }, 405);
 }
+
+// Exported for the test fixture: the stub chain has to place its transactions on
+// the blocks this handler will actually ask for.
+export { SAMPLE_STRIDE };

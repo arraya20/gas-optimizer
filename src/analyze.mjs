@@ -8,7 +8,7 @@
 // whatever number you handed it.
 
 import { toBigInt, formatGwei, formatPROS, percent, parseUnits, InputError } from "./numbers.mjs";
-import { measureBaseFee, measureCapacity, sampleTransactions, analysePayments, waitingVerdict, currentBaseFee } from "./fees.mjs";
+import { measureBaseFee, capacityFromBlocks, sampleTransactions, analysePayments, waitingVerdict, currentBaseFee } from "./fees.mjs";
 import { advise } from "./cost.mjs";
 
 /** Fields a caller is not allowed to supply, with the reason in the error. */
@@ -96,18 +96,24 @@ const unwrap = (v) => (v && typeof v === "object" && "wei" in v ? v.wei : v);
  * @param {object} p.request  already validated
  * @param {number} [p.sampleBlocks]
  */
-export async function analyze({ rpc, request, sampleBlocks = 250 }) {
+export async function analyze({ rpc, request, sampleBlocks = 250, stride = 800 }) {
   const chainId = await rpc.chainId();
   const head = await rpc.blockNumber();
 
-  const [baseFee, capacity, sample] = await Promise.all([
+  const [baseFee, sample] = await Promise.all([
     measureBaseFee(rpc, { windowSize: 512 }),
-    measureCapacity(rpc, { sampleBlocks: 32 }),
-    sampleTransactions(rpc, { blocks: sampleBlocks, concurrency: 16 }),
+    sampleTransactions(rpc, { blocks: sampleBlocks, stride, concurrency: 16 }),
   ]);
 
+  // Capacity comes from the same blocks the payment sample used. One report, one
+  // window — otherwise "blocks are empty" and "21% of fees went above base" would
+  // be describing two different stretches of chain.
+  const capacity = capacityFromBlocks(sample.blockSummaries, {
+    failed: sample.failedBlocks.length,
+  });
+
   const analyse = analysePayments(sample.rows, { baseFeeWei: baseFee.currentWei });
-  const waiting = waitingVerdict({ baseFee, analyse });
+  const waiting = waitingVerdict({ baseFee, analyse, capacity });
 
   // A zero tip is only recommended when the sample proves it gets included.
   const zeroTipProven = analyse.measured && Number(analyse.zeroTipShare) > 0;
@@ -141,11 +147,29 @@ export async function analyze({ rpc, request, sampleBlocks = 250 }) {
         error: w.error ?? null,
       })),
       capacity: {
-        sampled: capacity.sampled,
-        meanUtilisation: capacity.mean,
-        maxUtilisation: capacity.max,
-        gasLimitWei: capacity.gasLimitWei,
-        headroomX: capacity.headroomX,
+        blocksSampled: capacity.blocksSampled,
+        failedBlocks: capacity.failedBlocks,
+        spanBlocks: capacity.spanBlocks,
+        emptyCount: capacity.emptyCount,
+        emptyShare: capacity.emptyShare,
+        aggregateUtilisation: capacity.aggregateUtilisation,
+        peakUtilisation: capacity.peakUtilisation,
+        peakBlock: capacity.peakBlock,
+        peakUtilisationPct:
+          capacity.peakGasLimit && BigInt(capacity.peakGasLimit) > 0n
+            ? percent(BigInt(capacity.peakGasUsed), BigInt(capacity.peakGasLimit), 3)
+            : null,
+        gasUsedTotal: capacity.gasUsedTotal,
+        gasLimitTotal: capacity.gasLimitTotal,
+        // Formatted once, from exact integers. The text report and the dashboard
+        // both print this string; before, each computed its own percentage and
+        // they disagreed in the fourth decimal of the same figure.
+        aggregateUtilisationPct:
+          capacity.gasLimitTotal && BigInt(capacity.gasLimitTotal) > 0n
+            ? percent(BigInt(capacity.gasUsedTotal), BigInt(capacity.gasLimitTotal), 4)
+            : null,
+        headroomAtLeastX: capacity.headroomAtLeastX,
+        congestion: capacity.congestion,
       },
     },
     sample: {

@@ -160,6 +160,51 @@ check(
     : "gas limits were tight in this window",
 );
 
+// ── claim 5: there is spare gas capacity, and the band claim holds ───────────
+console.log("\nclaim: blocks are far from full, so a higher bid buys nothing\n");
+
+// Sampled independently of src/. Strided, because 200 consecutive blocks on this
+// chain is one short burst of activity and says little about the rest of it.
+const capNumbers = [];
+for (let i = 0; i < 200; i++) {
+  const n = head - i * 1000;
+  if (n >= 1) capNumbers.push(n);
+}
+const capBlocks = [];
+for (const n of capNumbers) {
+  const b = await rpc.call("eth_getBlockByNumber", [`0x${n.toString(16)}`, false]);
+  if (b) capBlocks.push({ block: n, used: BigInt(b.gasUsed), limit: BigInt(b.gasLimit) });
+}
+
+const sumUsed = capBlocks.reduce((a, b) => a + b.used, 0n);
+const sumLimit = capBlocks.reduce((a, b) => a + b.limit, 0n);
+const emptyCount = capBlocks.filter((b) => b.used === 0n).length;
+const aggregate = sumLimit > 0n ? Number((sumUsed * 1000000n) / sumLimit) / 1e6 : 0;
+const peak = capBlocks.reduce((m, b) => Math.max(m, Number(b.used) / Number(b.limit)), 0);
+const band = aggregate > 0 ? 10 ** Math.floor(Math.log10(1 / aggregate)) : null;
+
+check(
+  `aggregate gas demand was ${(aggregate * 100).toFixed(5)}% of capacity over ${capBlocks.length} blocks spanning ${Math.max(...capBlocks.map((b) => b.block)) - Math.min(...capBlocks.map((b) => b.block))} blocks`,
+  aggregate < 0.01,
+  `${emptyCount} of ${capBlocks.length} blocks used no gas at all; busiest was ${(peak * 100).toFixed(3)}% full`,
+);
+
+// The claim the report prints is a power of ten. Verify that specific number
+// rather than the raw ratio: 1/aggregate must actually reach it.
+check(
+  band ? `"at least ${band}x spare capacity" is arithmetically true` : "no band claimed",
+  band == null || 1 / aggregate >= band,
+  band ? `1 / ${aggregate.toExponential(3)} = ${Math.round(1 / aggregate)}x, so ${band}x is a safe floor` : "no gas was used in the window",
+);
+
+// A peak is one block, so it must never be used to claim more headroom than it
+// supports. This is the bug the banded figure replaced.
+check(
+  `busiest single block was ${(peak * 100).toFixed(3)}% full (block ${capBlocks.find((b) => Number(b.used) / Number(b.limit) === peak)?.block ?? "?"})`,
+  peak < 0.5,
+  `peak-based headroom would have read ${peak > 0 ? Math.round(1 / peak) : "infinite"}x — the figure that used to swing between renders`,
+);
+
 // ── arithmetic self-check on the sample ──────────────────────────────────────
 console.log("\narithmetic self-check\n");
 const recomputed = rows.every((r) => r.paid === r.eff * r.used && r.tip === r.eff - r.base);

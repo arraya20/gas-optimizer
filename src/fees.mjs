@@ -79,51 +79,160 @@ export async function currentBaseFee(rpc) {
   return toBigInt(block.baseFeePerGas, "baseFeePerGas").toString();
 }
 
-/** How full are blocks, i.e. is there any queue to bid against? */
-export async function measureCapacity(rpc, { sampleBlocks = 64, step = 1 } = {}) {
-  const head = await rpc.blockNumber();
-  const ratios = [];
-  let gasLimit = null;
-
-  for (let i = 0; i < sampleBlocks; i++) {
-    const n = head - i * step;
-    if (n < 1) break;
-    const block = await rpc.call("eth_getBlockByNumber", [`0x${n.toString(16)}`, false]);
-    if (!block) continue;
-    const used = toBigInt(block.gasUsed, "gasUsed");
-    const limit = toBigInt(block.gasLimit, "gasLimit");
-    if (limit === 0n) continue;
-    gasLimit = limit;
-    ratios.push(Number(used) / Number(limit));
+/**
+ * Gas capacity, computed from block headers we already fetched.
+ *
+ * Two design notes, both from watching this number misbehave.
+ *
+ * 1. It is a pure function of the blocks. Previously capacity fetched its own 32
+ *    consecutive blocks while the transaction sample fetched a different window,
+ *    so one report described two different sets of blocks. Anything that says
+ *    "blocks are mostly empty" and "21% of fees went above base" should be
+ *    talking about the same blocks.
+ *
+ * 2. Headroom is banded to a power of ten, because the leading digits are noise.
+ *    Six renders of this chain produced 2,071x, 2,629x, 4,065x, 4,284x, 4,921x,
+ *    6,141x and once 359x — a 17x spread on a figure quoted to four digits. The
+ *    band says "at least 10,000x" and stays put; the ratio said "13,599x" and
+ *    was wrong by a factor of two in either direction.
+ */
+export function capacityFromBlocks(blocks, { failed = 0 } = {}) {
+  const rows = blocks.filter((b) => b && b.gasLimit > 0n);
+  if (rows.length === 0) {
+    return {
+      blocksSampled: 0,
+      failedBlocks: failed,
+      spanBlocks: 0,
+      emptyCount: 0,
+      emptyShare: null,
+      aggregateUtilisation: null,
+      peakUtilisation: null,
+      peakBlock: null,
+      headroomAtLeastX: null,
+      congestion: "unknown",
+    };
   }
 
-  if (ratios.length === 0) {
-    return { sampled: 0, gasLimitWei: null, mean: null, max: null, headroomX: null };
+  let sumUsed = 0n;
+  let sumLimit = 0n;
+  let emptyCount = 0;
+  let peak = 0;
+  let peakBlock = null;
+  let peakUsed = 0n;
+  let peakLimit = 0n;
+  let minBlock = Infinity;
+  let maxBlock = -Infinity;
+
+  for (const b of rows) {
+    sumUsed += b.gasUsed;
+    sumLimit += b.gasLimit;
+    if (b.gasUsed === 0n) emptyCount++;
+    const u = Number(b.gasUsed) / Number(b.gasLimit);
+    if (u > peak) {
+      peak = u;
+      peakBlock = b.number;
+      peakUsed = b.gasUsed;
+      peakLimit = b.gasLimit;
+    }
+    if (b.number < minBlock) minBlock = b.number;
+    if (b.number > maxBlock) maxBlock = b.number;
   }
-  const mean = ratios.reduce((a, b) => a + b, 0) / ratios.length;
-  const max = ratios.reduce((a, b) => (b > a ? b : a), 0);
+
+  // Aggregate, not mean-of-ratios: a block with a large gas limit should carry
+  // more weight than a small one, and this is exactly total demand over total
+  // capacity. It is also far steadier than a peak, which rests on one block.
+  const aggregate = sumLimit > 0n ? Number(sumUsed) / Number(sumLimit) : null;
+
   return {
-    sampled: ratios.length,
-    gasLimitWei: gasLimit.toString(),
-    mean,
-    max,
-    // A block that is 0.1% full has 1000x headroom, so a fee bid buys nothing.
-    headroomX: max > 0 ? Math.round(1 / max) : null,
+    blocksSampled: rows.length,
+    failedBlocks: failed,
+    spanBlocks: maxBlock >= minBlock ? maxBlock - minBlock + 1 : 0,
+    emptyCount,
+    emptyShare: emptyCount / rows.length,
+    // Raw totals kept alongside the float: percentages derived from these are
+    // exact, instead of a float that was rounded and then parsed back.
+    gasUsedTotal: sumUsed.toString(),
+    gasLimitTotal: sumLimit.toString(),
+    aggregateUtilisation: aggregate,
+    peakUtilisation: peak,
+    peakBlock,
+    peakGasUsed: peakBlock == null ? null : peakUsed.toString(),
+    peakGasLimit: peakBlock == null ? null : peakLimit.toString(),
+    headroomAtLeastX: headroomBand(aggregate),
+    congestion: congestionLevel(aggregate),
   };
 }
 
 /**
- * Pull recent transactions with their receipts.
+ * Largest power of ten that fits inside 1/utilisation, or null when the claim
+ * would be weaker than an order of magnitude.
+ *
+ * Zero utilisation is not "infinite headroom" as a number to print — it means no
+ * gas was used in any sampled block, which is a different sentence and the
+ * report says that instead of inventing a figure.
+ */
+export function headroomBand(utilisation) {
+  if (utilisation == null || !(utilisation > 0)) return null;
+  const headroom = 1 / utilisation;
+  if (!Number.isFinite(headroom) || headroom < 10) return null;
+  return 10 ** Math.floor(Math.log10(headroom));
+}
+
+/**
+ * Qualitative queue state. Thresholds are wide on purpose: the decision they
+ * support ("does a higher bid buy inclusion?") is not sensitive to the
+ * difference between 0.004% and 0.008%.
+ */
+export function congestionLevel(utilisation) {
+  if (utilisation == null) return "unknown";
+  if (utilisation >= 0.5) return "contended";
+  if (utilisation >= 0.1) return "light";
+  return "no-queue";
+}
+
+/** Gas capacity over a fresh window of headers. Used by the CLI standalone path. */
+export async function measureCapacity(rpc, { sampleBlocks = 192, stride = 800 } = {}) {
+  const head = await rpc.blockNumber();
+  const blocks = [];
+  let failed = 0;
+
+  for (let i = 0; i < sampleBlocks; i++) {
+    const n = head - i * stride;
+    if (n < 1) break;
+    try {
+      const b = await rpc.call("eth_getBlockByNumber", [`0x${n.toString(16)}`, false]);
+      if (b) {
+        blocks.push({
+          number: toNumber(b.number),
+          gasUsed: toBigInt(b.gasUsed, "gasUsed"),
+          gasLimit: toBigInt(b.gasLimit, "gasLimit"),
+        });
+      }
+    } catch {
+      failed++;
+    }
+  }
+
+  return capacityFromBlocks(blocks, { failed });
+}
+
+/**
+ * Pull transactions with their receipts from a strided window of blocks.
+ *
+ * Strided, not contiguous: this chain produces a transaction every few hundred
+ * blocks, so 250 consecutive blocks is mostly one short burst of activity. A
+ * stride spreads the same number of reads over a much wider span, which is
+ * better evidence for "how do senders behave" and costs the same.
  *
  * Concurrency is bounded and failures are counted, not swallowed: a scan that
  * silently drops half its blocks reports statistics about a different sample
  * than the one it names.
  */
-export async function sampleTransactions(rpc, { blocks = 300, concurrency = 16 } = {}) {
+export async function sampleTransactions(rpc, { blocks = 250, stride = 800, concurrency = 16 } = {}) {
   const head = await rpc.blockNumber();
   const numbers = [];
   for (let i = 0; i < blocks; i++) {
-    const n = head - i;
+    const n = head - i * stride;
     if (n >= 1) numbers.push(n);
   }
 
@@ -172,11 +281,24 @@ export async function sampleTransactions(rpc, { blocks = 300, concurrency = 16 }
   await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, pending.length)) }, receiptWorker));
 
   return {
-    window: { from: head - blocks + 1, to: head, blocksRequested: blocks },
+    window: {
+      to: head,
+      from: head - (blocks - 1) * stride,
+      blocksRequested: blocks,
+      stride,
+      spanBlocks: (blocks - 1) * stride + 1,
+    },
     blocksScanned: blockData.length,
     blocksWithTransactions: withTxs.length,
     transactionsFound: pending.length,
     rows,
+    // Headers already in hand: capacity is computed from these rather than from
+    // a second fetch of a different window.
+    blockSummaries: blockData.map((b) => ({
+      number: toNumber(b.number),
+      gasUsed: toBigInt(b.gasUsed, "gasUsed"),
+      gasLimit: toBigInt(b.gasLimit, "gasLimit"),
+    })),
     failedBlocks,
     failedReceipts,
   };
@@ -290,7 +412,7 @@ function medianRatio(rows) {
  * "hold until the price drops" describes an event that does not happen — and a
  * scheduler built on it would simply delay every transaction forever.
  */
-export function waitingVerdict({ baseFee, analyse }) {
+export function waitingVerdict({ baseFee, analyse, capacity }) {
   const reasons = [];
   if (!baseFee || baseFee.distinctCount == null) {
     return { canHelp: null, reasons: ["base fee history is unavailable, so no claim is made"] };
@@ -300,6 +422,19 @@ export function waitingVerdict({ baseFee, analyse }) {
     return { canHelp: true, reasons };
   }
   reasons.push(`base fee held ${baseFee.distinctGwei[0]} gwei across ${baseFee.blocksObserved} blocks in ${baseFee.windows.length} windows`);
+
+  // Demand side. A flat price only means "waiting cannot help" if there is also
+  // nothing to bid against; a flat price with full blocks would still make
+  // inclusion timing matter.
+  if (capacity && capacity.blocksSampled > 0 && capacity.gasLimitTotal) {
+    const pctText = percent(BigInt(capacity.gasUsedTotal), BigInt(capacity.gasLimitTotal), 4);
+    reasons.push(
+      `aggregate gas demand was ${pctText}% of capacity across ${capacity.blocksSampled} blocks` +
+        (capacity.emptyCount > 0
+          ? `, with ${capacity.emptyCount} of them using no gas at all`
+          : ""),
+    );
+  }
 
   if (analyse && analyse.measured) {
     const share = Number(analyse.zeroTipShare);

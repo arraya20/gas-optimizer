@@ -91,12 +91,26 @@ function render(report) {
   $("reasons").replaceChildren(...report.advice.reasons.map((r) => li(r)));
 
   const m = report.market;
+  const cap = m.capacity;
   fill($("market"), [
     ["base fee", m.baseFeeGwei ? `${m.baseFeeGwei} gwei` : "unreadable"],
     ["history", `${m.distinctCount} value(s) over ${num(m.blocksObserved)} blocks, ${m.windows.length} windows`],
     ["frozen", m.frozen ? "yes — never moved in the measured windows" : "no"],
-    ["block usage", `${pct(m.capacity.meanUtilisation)} mean, ${pct(m.capacity.maxUtilisation)} peak`],
-    ["headroom", m.capacity.headroomX ? `${num(m.capacity.headroomX)}x` : "n/a"],
+    [
+      "gas demand",
+      cap.aggregateUtilisationPct == null ? "n/a" : `${cap.aggregateUtilisationPct}% of capacity`,
+    ],
+    ["sampled", `${num(cap.blocksSampled)} blocks over ${num(cap.spanBlocks)}, ${num(cap.emptyCount)} empty`],
+    ["busiest block", cap.peakUtilisationPct == null ? "n/a" : `${cap.peakUtilisationPct}% (block ${num(cap.peakBlock)})`],
+    [
+      "spare capacity",
+      cap.headroomAtLeastX
+        ? `at least ${num(cap.headroomAtLeastX)}x`
+        : cap.aggregateUtilisation === 0
+          ? "no gas used at all"
+          : "under 10x",
+    ],
+    ["queue", cap.congestion],
   ]);
 
   const a = report.advice;
@@ -116,7 +130,7 @@ function render(report) {
 
   const s = report.sample;
   fill($("sample"), [
-    ["window", `${num(s.window.blocksRequested)} blocks to ${num(s.window.to)}`],
+    ["window", `${num(s.window.blocksRequested)} blocks sampled over ${num(s.window.spanBlocks)}, ending ${num(s.window.to)}`],
     ["with transactions", `${num(s.blocksWithTransactions)} blocks`],
     ["successful tx", num(s.transactions)],
     ["paid base only", s.zeroTipShare == null ? "n/a" : `${s.zeroTipShare}%`],

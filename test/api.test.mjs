@@ -5,7 +5,7 @@
 // the wire format.
 
 import { createServer } from "node:http";
-import { onRequestPost, onRequestGet } from "../functions/api/analyze.js";
+import { onRequestPost, onRequestGet, SAMPLE_STRIDE } from "../functions/api/analyze.js";
 import { test, run, eq, setFile } from "./harness.mjs";
 
 setFile("api");
@@ -16,9 +16,14 @@ const hex = (n) => `0x${BigInt(n).toString(16)}`;
 
 // ── synthetic chain ─────────────────────────────────────────────────────────
 //
-// Height 200. Every block carries the same 10 gwei base fee; two blocks hold
-// transactions: one paying base only, one paying a 5 gwei tip on top.
-const HEIGHT = 200;
+// The handler reads a strided window, so the stub chain has to be tall enough
+// for that window to fit inside it. Blocks are spaced SAMPLE_STRIDE apart — the
+// same spacing the handler samples at — so the fixture describes the shape of
+// chain the code actually queries, instead of a contiguous one it no longer does.
+const HEIGHT = SAMPLE_STRIDE * 70 + 5;
+const BLOCK_A = HEIGHT - 2 * SAMPLE_STRIDE; // one tx, base fee only
+const BLOCK_B = HEIGHT - 5 * SAMPLE_STRIDE; // one tx, tip + over-locked
+const BLOCK_C = HEIGHT - 7 * SAMPLE_STRIDE; // one reverted tx: must not count
 
 function makeTx(hash, gasLimit, maxFee, tip) {
   return {
@@ -33,20 +38,22 @@ function makeTx(hash, gasLimit, maxFee, tip) {
 
 const TX_A = makeTx("0xaa", 100_000n, 10n * GWEI, 0n); // base only
 const TX_B = makeTx("0xbb", 100_000n, 20n * GWEI, 5n * GWEI); // tip + over-lock
+const TX_C = makeTx("0xcc", 100_000n, 30n * GWEI, 9n * GWEI); // reverted: paid gas, no inclusion
 
 const RECEIPTS = {
   "0xaa": { status: "0x1", gasUsed: hex(60_000n), effectiveGasPrice: hex(10n * GWEI) },
   "0xbb": { status: "0x1", gasUsed: hex(60_000n), effectiveGasPrice: hex(15n * GWEI) },
+  "0xcc": { status: "0x0", gasUsed: hex(60_000n), effectiveGasPrice: hex(30n * GWEI) },
 };
 
 function blockAt(n) {
-  const hasTxs = n === HEIGHT - 2 || n === HEIGHT - 5;
+  const txs = n === BLOCK_A ? [TX_A] : n === BLOCK_B ? [TX_B] : n === BLOCK_C ? [TX_C] : [];
   return {
     number: hex(n),
     baseFeePerGas: hex(BASE),
-    gasUsed: hex(hasTxs ? 120_000n : 0n),
+    gasUsed: hex(txs.length ? 120_000n : 0n),
     gasLimit: hex(1_000_000_000n),
-    transactions: n === HEIGHT - 2 ? [TX_A] : n === HEIGHT - 5 ? [TX_B] : [],
+    transactions: txs,
   };
 }
 
@@ -219,11 +226,20 @@ test("an unreachable node is 502, not a fabricated report", async () => {
 test("a reverted transaction is excluded from the payment statistics", async () => {
   const res = await onRequestPost(req({ gasLimit: 21000 }, { sample: 20 }));
   const body = await res.json();
-  // Both stub transactions succeeded, so both count.
-  eq(body.sample.transactions > 0, true);
-  for (const row of body.sample.paidTotalWei ? [body.sample.paidTotalWei] : []) {
-    eq(typeof row, "string", "quantities cross the wire as strings");
-  }
+  // Three stub transactions landed in the window; one reverted. A revert paid gas
+  // but was not included, so counting it would inflate the sample with a payment
+  // that did not buy what the sample claims to measure.
+  eq(body.sample.transactions, 2, `only the two successful txs count, got ${body.sample.transactions}`);
+  eq(typeof body.sample.paidTotalWei, "string", "quantities cross the wire as strings");
+});
+
+test("capacity in the report describes the strided window, not a contiguous tail", async () => {
+  const res = await onRequestPost(req({ gasLimit: 21000 }, { sample: 20 }));
+  const body = await res.json();
+  eq(body.market.capacity.blocksSampled, 20, "every requested header was read");
+  eq(body.market.capacity.spanBlocks > 20 * SAMPLE_STRIDE * 0.9, true, `span covers the strides: ${body.market.capacity.spanBlocks}`);
+  eq(body.market.capacity.emptyCount, 17, "only three blocks carried transactions");
+  eq(["no-queue", "light", "contended"].includes(body.market.capacity.congestion), true);
 });
 
 // Start the server, run every test, then close — in that order.

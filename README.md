@@ -20,9 +20,10 @@ Two questions had to be answered before building anything:
 header checked, spanning 8,000,000 blocks, and one value across four disjoint
 `eth_feeHistory` windows. Distinct values observed: **1**.
 
-**Is there a queue to bid against?** No. Block gas usage averages 0.000027% of a
-1,000,000,000 gas limit; the busiest sampled block used 0.016%. There is roughly
-6,000× headroom.
+**Is there a queue to bid against?** No. Aggregate gas demand was 0.0048% of total
+capacity across 200 blocks spanning 199,000 blocks; 144 of those blocks used no gas
+at all, and the busiest single block was 0.049% full. Spare capacity is at least
+**10,000×**.
 
 So "wait for a cheaper window" describes an event that does not occur. A tool
 that implemented it would delay every transaction forever and call that
@@ -37,7 +38,7 @@ optimisation. This repo answers the question that does have an answer:
 |---|---|
 | Current base fee | block header |
 | Base fee history across disjoint windows | `eth_feeHistory`, 4 windows |
-| Block utilisation and headroom | recent block headers |
+| Aggregate gas demand and empty blocks | block headers, strided sample |
 | What recent transactions actually paid | receipts, `effectiveGasPrice` |
 | Share of transactions paying base fee only | receipts |
 | Gas limit vs gas used | transaction + receipt |
@@ -46,6 +47,33 @@ Nothing is accepted from the caller except a description of the caller's own
 transaction. `baseFee`, `gasPrice`, `currentGasGwei`, `verdict`,
 `recommendation`, `decision` and `savings` are rejected with HTTP 400 — supplying
 one is the exact failure mode the scaffold had.
+
+## Why spare capacity is banded
+
+The first version of this figure was `round(1 / peak)` over 32 consecutive blocks.
+It is the kind of number that looks rigorous and is not. Rendered against this
+chain at different moments it read **2,071×, 4,059×, 4,921×, 6,141×** and once
+**359×** — the same claim, quoted to four digits, wrong by up to 17×, because a
+peak is a single block and one busy block moves it.
+
+Two changes, in this order:
+
+1. **Measure demand, not the peak.** Aggregate demand is `Σ gasUsed / Σ gasLimit`
+   over the sampled blocks. It is a mean, so it converges as the sample grows
+   instead of jumping on one observation. The peak is still reported, with the
+   block number it came from, so the claim stays checkable.
+2. **Band the derived figure to a power of ten.** `1/aggregate` is a ratio of two
+   tiny numbers; its leading digits are noise. Printing `13,599×` claims an
+   accuracy the sample does not have. Both 13,599 and 22,153 now read
+   **"at least 10,000×"**, which is true for both and stable between renders.
+
+The empty-block count is reported separately, because *"144 of 200 blocks used no
+gas at all"* is a direct observation, and it is the load-bearing fact behind
+"there is no queue". It needs no extrapolation.
+
+When nothing was used, the percentage is 0 and no multiplier is printed. The old
+code returned `null` there and the dashboard rendered `n/a` — the emptiest
+possible chain reading as "unknown", the worst available reading.
 
 ## Two costs, kept apart
 
@@ -117,10 +145,14 @@ chain.
 ## Tests
 
 ```bash
-npm test            # 46 offline tests: 35 unit + 11 API
-npm run test:live   # 13 tests against the real node, shape-only
-npm run verify:chain
+npm test            # 56 offline tests: 44 unit + 12 API
+npm run test:live   # 15 tests against the real node, shape-only
+npm run verify:chain  # 10 checks re-derived from raw blocks, no src/ imports
 ```
+
+One of the live tests exists purely to catch the regression above: it samples two
+independent strided windows and requires them to agree on the headroom band, not
+on the digits. A figure that moves by 17× between renders passes no honest test.
 
 Offline tests use no network and no dependencies. The API tests start a real HTTP
 JSON-RPC server on a socket rather than injecting a mock, because the wire format
@@ -137,3 +169,8 @@ renders what `/api/analyze` returns, because a second implementation of the rule
 is a second set of rules. The sample window is capped at 60 blocks server-side to
 stay inside the worker subrequest budget, and the cap is reported in the response
 when it binds.
+
+Blocks are sampled at a stride rather than contiguously. This chain produces a
+transaction every few hundred blocks, so 60 consecutive blocks is one short burst
+of activity dressed up as a sample. 60 headers at a stride of 800 covers about
+47,000 blocks for the same number of requests.

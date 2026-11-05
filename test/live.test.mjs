@@ -6,6 +6,7 @@
 
 import { createRpc } from "../src/rpc.mjs";
 import { validateRequest, analyze } from "../src/analyze.mjs";
+import { capacityFromBlocks, sampleTransactions } from "../src/fees.mjs";
 import { test, run, eq, setFile } from "./harness.mjs";
 
 setFile("live");
@@ -51,9 +52,38 @@ test("the frozen claim agrees with the distinct values it listed", async () => {
 
 test("capacity figures are plausible fractions", async () => {
   const r = await report();
-  if (r.market.capacity.sampled === 0) return;
-  eq(r.market.capacity.meanUtilisation >= 0 && r.market.capacity.meanUtilisation <= 1, true);
-  eq(r.market.capacity.maxUtilisation >= r.market.capacity.meanUtilisation, true);
+  const c = r.market.capacity;
+  if (c.blocksSampled === 0) return;
+  eq(c.aggregateUtilisation >= 0 && c.aggregateUtilisation <= 1, true);
+  eq(c.peakUtilisation >= c.aggregateUtilisation, true, "a peak cannot be below the aggregate");
+  eq(c.emptyCount <= c.blocksSampled, true);
+  eq(c.spanBlocks >= c.blocksSampled, true, "span covers the sampled blocks");
+});
+
+test("headroom band is stable across independent windows", async () => {
+  // The regression this exists for: the old figure was round(1/peak) over 32
+  // consecutive blocks and moved by 17x between renders of the same chain.
+  // Two unrelated windows must now agree on the band, not on the digits.
+  const a = capacityFromBlocks((await sampleTransactions(createRpc({ retries: 1, timeoutMs: 20000 }), { blocks: 96, stride: 800, concurrency: 12 })).blockSummaries);
+  const b = capacityFromBlocks((await sampleTransactions(createRpc({ retries: 1, timeoutMs: 20000 }), { blocks: 96, stride: 811, concurrency: 12 })).blockSummaries);
+  eq(a.blocksSampled > 50 && b.blocksSampled > 50, true, "both windows actually read blocks");
+  eq(
+    a.headroomAtLeastX,
+    b.headroomAtLeastX,
+    `bands disagree: ${a.headroomAtLeastX} vs ${b.headroomAtLeastX} ` +
+      `(aggregate ${a.aggregateUtilisation} vs ${b.aggregateUtilisation})`,
+  );
+  eq(a.congestion, b.congestion, "queue state must not flap between windows");
+});
+
+test("capacity is computed from the blocks the payment sample read", async () => {
+  const r = await report();
+  eq(
+    r.market.capacity.blocksSampled <= r.sample.blocksScanned,
+    true,
+    "capacity cannot claim more blocks than the sample fetched",
+  );
+  eq(r.market.capacity.failedBlocks, r.sample.failedBlocks, "same failures, same window");
 });
 
 test("the payment sample holds together arithmetically", async () => {

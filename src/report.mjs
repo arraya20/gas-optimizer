@@ -23,9 +23,28 @@ export function renderReport(report) {
   );
   out.push(
     line(
-      `  capacity     mean ${pct(market.capacity.meanUtilisation)}, peak ${pct(
-        market.capacity.maxUtilisation,
-      )} of block gas${market.capacity.headroomX ? ` (${market.capacity.headroomX}x headroom)` : ""}`,
+      `  capacity     ${market.capacity.aggregateUtilisationPct ?? "n/a"}% of total gas capacity over ${groupDigits(
+        market.capacity.blocksSampled,
+      )} blocks`,
+    ),
+  );
+  out.push(
+    line(
+      `               ${groupDigits(market.capacity.emptyCount)} of them used no gas; busiest used ${pct(
+        market.capacity.peakUtilisation,
+        3,
+      )} (block ${market.capacity.peakBlock ?? "—"})`,
+    ),
+  );
+  out.push(
+    line(
+      `               ${
+        market.capacity.headroomAtLeastX
+          ? `at least ${groupDigits(market.capacity.headroomAtLeastX)}x spare capacity`
+          : market.capacity.aggregateUtilisation === 0
+            ? "no gas used at all in the sampled blocks"
+            : "headroom below an order of magnitude"
+      } — queue state: ${market.capacity.congestion}`,
     ),
   );
   out.push(
@@ -42,7 +61,13 @@ export function renderReport(report) {
   for (const reason of waiting.reasons) out.push(line(`               · ${reason}`));
   out.push(line(""));
 
-  out.push(line(`sample       last ${groupDigits(sample.window.blocksRequested)} blocks → ${sample.blocksWithTransactions} with transactions`));
+  out.push(
+    line(
+      `sample       ${groupDigits(sample.window.blocksRequested)} blocks over ${groupDigits(
+        sample.window.spanBlocks,
+      )} → ${sample.blocksWithTransactions} with transactions`,
+    ),
+  );
   if (sample.transactions > 0) {
     out.push(
       line(
@@ -94,7 +119,7 @@ export function renderReport(report) {
   return out.join("\n");
 }
 
-const pct = (v) => (v == null ? "n/a" : `${(v * 100).toFixed(3)}%`);
+const pct = (v, digits = 3) => (v == null ? "n/a" : `${(v * 100).toFixed(digits)}%`);
 
 function wrap(text, width, indent) {
   const words = text.split(/\s+/);
