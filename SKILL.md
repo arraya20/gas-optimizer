@@ -17,7 +17,9 @@ and stops there.
 Provide the transaction the caller intends to send:
 
 - `gasLimit` (decimal integer, required);
-- `gasUsed`, `maxFeePerGasWei`, `maxPriorityFeePerGasWei` when already decided.
+- `gasUsed` (optional decimal integer);
+- the fee ceiling as `maxFeeGwei` or `maxFeeWei`;
+- the priority tip as `tipGwei`, `maxPriorityFeeGwei`, or `tipWei`.
 
 The caller may **not** supply `baseFee`, `gasPrice`, `verdict` or
 `recommendation`. Those are market observations and conclusions produced here; a
