@@ -1,0 +1,10 @@
+{
+  "name": "pharos-gas-fee-optimizer",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Real-time gas tracker and intelligent transaction timing scheduler.",
+  "scripts": {
+    "test": "node test/index.test.mjs"
+  },
+  "license": "MIT"
+}

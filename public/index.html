@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pharos Gas Fee Optimizer</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; max-width: 800px; margin: 0 auto; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+    input, button { padding: 10px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #fff; margin: 4px; }
+    button { background: #6366f1; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>⛽ Pharos Gas Fee Optimizer</h1>
+  <div class="card">
+    <label>Current Gas Price (Gwei):</label> <input id="currentGas" value="12.4"><br>
+    <label>Max Willing Gas Price (Gwei):</label> <input id="targetGas" value="15.0"><br>
+    <button id="evalBtn">Evaluate Timing</button>
+  </div>
+  <div id="output"></div>
+
+  <script type="module">
+    import { evaluateSubmissionTiming } from "./optimizer.mjs";
+    document.getElementById("evalBtn").onclick = () => {
+      const res = evaluateSubmissionTiming({
+        currentGasGwei: document.getElementById("currentGas").value,
+        targetMaxGasGwei: document.getElementById("targetGas").value,
+        deadlineTimestamp: Date.now() + 600000
+      });
+      document.getElementById("output").innerHTML = `
+        <div class="card">
+          <h3>Decision: ${res.shouldExecute ? '🟢 EXECUTE NOW' : '🟡 HOLD TRANSACTION'}</h3>
+          <p>${res.reason}</p>
+        </div>
+      `;
+    };
+  </script>
+</body>
+</html>
