@@ -126,21 +126,49 @@ good:
 importing `src/`, so it cannot prove the code agrees with itself. Sample output:
 
 ```
-pass  one base fee value across 6 block headers spanning 8000000 blocks
-      10 gwei at blocks 22141491, 22136491, 22091491, 21641491, 20141491, 14141491
-pass  zero-tip transactions get included (81 of 136 successful tx)
-      example: 0x275e2fc2…3604 in block 22141488 paid 10 gwei = base fee
-pass  a zero-tip and a tipping transaction share a block
-      block 22141471: tips present 0 gwei, 0 gwei, 8.1625 gwei
-pass  21.54% of all fees paid went above the base fee
-pass  91 of 136 transactions set maxFee above the base fee
-      locking 0.922452 PROS more than needed across the sample
-pass  median gas limit is 4.30x the gas actually used
+verifying at block 22145466
+
+claim: the base fee never moves
+  pass  one base fee value across 6 block headers spanning 8000000 blocks
+        10 gwei at blocks 22145466, 22140466, 22095466, 21645466, 20145466, 14145466
+
+claim: transactions are charged exactly that base fee when they do not tip
+  pass  zero-tip transactions get included (62 of 84 successful tx)
+        example: 0x151b62ca…f48c in block 22145454 paid 10 gwei = base fee
+  pass  a zero-tip and a tipping transaction share a block
+        block 22145399: tips present 0 gwei, 1 gwei, 0 gwei
+
+claim: a measurable share of every fee is paid above the base fee
+  pass  4.96% of all fees paid went above the base fee
+        sample: 84 tx in 73 blocks; 22 paid a tip, 62 did not
+
+claim: wallets reserve more balance than the base fee requires
+  pass  57 of 84 transactions set maxFee above the base fee
+        locking 0.244771 PROS more than needed across the sample
+  pass  median gas limit is 3.51x the gas actually used
+
+claim: blocks are far from full, so a higher bid buys nothing
+  pass  aggregate gas demand was 0.00490% of capacity over 200 blocks spanning 199000 blocks
+        143 of 200 blocks used no gas at all; busiest was 0.067% full
+  pass  "at least 10000x spare capacity" is arithmetically true
+        1 / 4.900e-5 = 20408x, so 10000x is a safe floor
+  pass  busiest single block was 0.067% full (block 22002466)
+        peak-based headroom would have read 1502x
+
+arithmetic self-check
+  pass  paid = effectiveGasPrice × gasUsed and tip = effective - base for every row
+
+10/10 checks passed
 ```
 
-The same-block line is the load-bearing one: two transactions with no tip
-included beside one paying 8.16 gwei, so inclusion does not require a tip on this
-chain.
+Two lines carry the argument. The same-block one: two transactions with no tip
+included beside one paying 1 gwei, so inclusion does not require a tip on this
+chain. The last capacity line prints what the peak-based figure *would* have said
+(1,502×) next to the banded claim (10,000×) — the discrepancy is the bug, made
+visible instead of silent.
+
+Numbers move between runs because the window moves with the chain head. That is
+expected; what must not move is which side of each threshold the chain lands on.
 
 ## Tests
 
@@ -174,3 +202,20 @@ Blocks are sampled at a stride rather than contiguously. This chain produces a
 transaction every few hundred blocks, so 60 consecutive blocks is one short burst
 of activity dressed up as a sample. 60 headers at a stride of 800 covers about
 47,000 blocks for the same number of requests.
+
+## Deploying
+
+Cloudflare Pages, no build step, no environment variables:
+
+```bash
+npx wrangler pages deploy public
+```
+
+`wrangler.toml` points `pages_build_output_dir` at `public` and pins
+`compatibility_date`. The Function in `functions/api/analyze.js` reaches the
+public Pharos RPC directly; there is no key to configure.
+
+Status: the code has been exercised in `workerd` locally (`wrangler pages dev`,
+`POST /api/analyze` → 200), but **the dashboard has never been deployed to a
+public URL**. Treat deployment as unverified until a real request to a real Pages
+domain succeeds — local workerd and the edge are separate claims.
