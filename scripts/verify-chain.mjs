@@ -4,12 +4,16 @@
 // This deliberately does NOT import src/. If it reused the analysis code it
 // would only prove the code agrees with itself. Here we go back to raw blocks
 // and receipts, do the arithmetic again, and print the block numbers and hashes
-// so a claim can be checked by hand.
+// so a claim can be checked by hand. That includes the transport: the small
+// JSON-RPC client below is local, so a bug in src/rpc.mjs cannot hide here too.
+//
+// A throttled node is not a failed claim. When the node stops answering, the
+// run prints what it managed to verify, names the reason it stopped, and exits
+// non-zero — it never reports "0 checks failed" because it never got to run them.
 
-import { createRpc } from "../src/rpc.mjs";
-
-const rpc = createRpc({ retries: 3, timeoutMs: 25000 });
+const RPC_URL = process.env.PHAROS_RPC ?? "https://rpc.pharos.xyz";
 const GWEI = 1_000_000_000n;
+
 const gwei = (wei) => {
   const v = BigInt(wei);
   const whole = v / GWEI;
@@ -18,6 +22,67 @@ const gwei = (wei) => {
   return `${whole}.${frac.toString().padStart(9, "0").replace(/0+$/, "")}`;
 };
 
+const transient = (message) => /rate.?limit|too many requests|cu limit|compute.?unit|temporarily|try again|ETIMEDOUT|ECONNRESET/i.test(String(message ?? ""));
+
+/** Local JSON-RPC client: retries only what could plausibly succeed on retry. */
+function makeRpc({ url = RPC_URL, retries = 3, timeoutMs = 25000 } = {}) {
+  async function once(method, params) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let res;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+        signal: controller.signal,
+      });
+    } catch (cause) {
+      throw Object.assign(new Error(`${method}: transport failed (${cause.message})`), { transient: true });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw Object.assign(new Error(`${method}: HTTP ${res.status}${text ? ` — ${text.slice(0, 200)}` : ""}`), {
+        transient: res.status === 429 || res.status === 408 || res.status >= 500,
+      });
+    }
+    const body = await res.json().catch(() => null);
+    if (!body) throw Object.assign(new Error(`${method}: response was not JSON`), { transient: false });
+    if (body.error) {
+      throw Object.assign(new Error(`${method}: ${body.error.message}`), {
+        code: body.error.code,
+        transient: body.error.code === -32005 || body.error.code === -32011 || transient(body.error.message),
+      });
+    }
+    return body.result;
+  }
+
+  async function call(method, params = []) {
+    let last;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await once(method, params);
+      } catch (err) {
+        last = err;
+        if (!err.transient || attempt === retries) break;
+        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+      }
+    }
+    throw last;
+  }
+
+  return {
+    call,
+    // Not `this.call` — an arrow function here has no own `this`, and depending
+    // on call-site binding is exactly the kind of thing a verifier should not do.
+    blockNumber: async () => Number(BigInt(await call("eth_blockNumber"))),
+  };
+}
+
+const rpc = makeRpc();
+
 const results = [];
 const check = (name, ok, detail) => {
   results.push({ name, ok, detail });
@@ -25,35 +90,24 @@ const check = (name, ok, detail) => {
   if (detail) console.log(`        ${detail}`);
 };
 
-const head = await rpc.blockNumber();
-console.log(`verifying at block ${head}\n`);
-
-// ── claim 1: the base fee has one value across independent block headers ──────
-console.log("claim: the base fee never moves\n");
-
-const SAMPLES = [0, 5_000, 50_000, 500_000, 2_000_000, 8_000_000];
-const observed = [];
-for (const offset of SAMPLES) {
-  const n = head - offset;
-  if (n < 1) continue;
-  const b = await rpc.call("eth_getBlockByNumber", [`0x${n.toString(16)}`, false]);
-  if (!b) continue;
-  observed.push({ block: n, baseFee: BigInt(b.baseFeePerGas) });
+/**
+ * One claim. If the node stops answering mid-claim, the claim is recorded as
+ * unavailable — not failed, and not passed — and the run continues so the rest
+ * of the report can still be produced.
+ */
+async function claim(title, body) {
+  console.log(`\nclaim: ${title}\n`);
+  try {
+    await body();
+  } catch (err) {
+    results.push({ name: `${title} — unavailable`, ok: false, unavailable: true });
+    console.log(`  unavailable  ${title}`);
+    console.log(`               ${err.message}`);
+    console.log("               this claim was NOT verified; it is neither confirmed nor refuted");
+  }
 }
 
-const distinct = [...new Set(observed.map((o) => o.baseFee.toString()))];
-check(
-  `one base fee value across ${observed.length} block headers spanning ${head - Math.min(...observed.map((o) => o.block))} blocks`,
-  distinct.length === 1,
-  distinct.length === 1
-    ? `${gwei(distinct[0])} gwei at blocks ${observed.map((o) => o.block).join(", ")}`
-    : `saw ${distinct.length} values: ${distinct.map(gwei).join(", ")} gwei`,
-);
-
-// The header says one thing; the receipts are what people were actually charged.
-console.log("\nclaim: transactions are charged exactly that base fee when they do not tip\n");
-
-async function collect({ blocks, concurrency = 16 }) {
+async function collect(head, { blocks, concurrency = 16 }) {
   const numbers = [];
   for (let i = 0; i < blocks; i++) if (head - i >= 1) numbers.push(head - i);
 
@@ -94,126 +148,174 @@ async function collect({ blocks, concurrency = 16 }) {
   return { rows, blocksWithTxs };
 }
 
-const { rows, blocksWithTxs } = await collect({ blocks: 400 });
-const paidBaseOnly = rows.filter((r) => r.tip === 0n);
-const tipped = rows.filter((r) => r.tip > 0n);
+let rows = [];
+let blocksWithTxs = [];
 
-check(
-  `zero-tip transactions get included (${paidBaseOnly.length} of ${rows.length} successful tx)`,
-  paidBaseOnly.length > 0,
-  paidBaseOnly.length > 0
-    ? `example: ${paidBaseOnly[0].hash} in block ${paidBaseOnly[0].block} paid ${gwei(paidBaseOnly[0].eff)} gwei = base fee`
-    : "no zero-tip transaction found in the window",
-);
+let head;
+try {
+  head = await rpc.blockNumber();
+} catch (err) {
+  console.log(`verification unavailable: the node did not answer (${err.message})`);
+  console.log("nothing was verified; this is not a pass and not a failure of the claims");
+  process.exit(2);
+}
+console.log(`verifying at block ${head}\n`);
 
-// The strongest form of the claim: two transactions in the SAME block, one
-// tipping and one not. If the tip were required for inclusion, the zero-tip one
-// could not be sitting beside a paying one.
-const sameBlock = blocksWithTxs.find((b) => {
-  const inBlock = rows.filter((r) => r.block === Number(BigInt(b.number)));
-  return inBlock.some((r) => r.tip === 0n) && inBlock.some((r) => r.tip > 0n);
+// ── claim 1: the base fee has one value across independent block headers ──────
+await claim("the base fee never moves", async () => {
+  const SAMPLES = [0, 5_000, 50_000, 500_000, 2_000_000, 8_000_000];
+  const observed = [];
+  for (const offset of SAMPLES) {
+    const n = head - offset;
+    if (n < 1) continue;
+    const b = await rpc.call("eth_getBlockByNumber", [`0x${n.toString(16)}`, false]);
+    if (!b) continue;
+    observed.push({ block: n, baseFee: BigInt(b.baseFeePerGas) });
+  }
+
+  const distinct = [...new Set(observed.map((o) => o.baseFee.toString()))];
+  check(
+    `one base fee value across ${observed.length} block headers spanning ${head - Math.min(...observed.map((o) => o.block))} blocks`,
+    distinct.length === 1,
+    distinct.length === 1
+      ? `${gwei(distinct[0])} gwei at blocks ${observed.map((o) => o.block).join(", ")}`
+      : `saw ${distinct.length} values: ${distinct.map(gwei).join(", ")} gwei`,
+  );
 });
-check(
-  "a zero-tip and a tipping transaction share a block",
-  Boolean(sameBlock),
-  sameBlock
-    ? `block ${Number(BigInt(sameBlock.number))}: tips present ${rows
-        .filter((r) => r.block === Number(BigInt(sameBlock.number)))
-        .map((r) => `${gwei(r.tip)} gwei`)
-        .join(", ")}`
-    : "no such block in the window — the claim would be unproven here",
-);
 
-// ── claim 3: how much is spent above base ────────────────────────────────────
-console.log("\nclaim: a measurable share of every fee is paid above the base fee\n");
+// ── claim 2: receipts, not headers ───────────────────────────────────────────
+await claim("transactions are charged exactly that base fee when they do not tip", async () => {
+  const collected = await collect(head, { blocks: 400 });
+  rows = collected.rows;
+  blocksWithTxs = collected.blocksWithTxs;
 
-const paidTotal = rows.reduce((a, r) => a + r.paid, 0n);
-const tipTotal = rows.reduce((a, r) => a + r.tip * r.used, 0n);
-const tipPct = paidTotal > 0n ? Number((tipTotal * 10000n) / paidTotal) / 100 : 0;
-check(
-  `${tipPct.toFixed(2)}% of all fees paid went above the base fee`,
-  tipPct > 0,
-  `sample: ${rows.length} tx in ${new Set(rows.map((r) => r.block)).size} blocks; ${tipped.length} paid a tip, ${paidBaseOnly.length} did not`,
-);
+  const paidBaseOnly = rows.filter((r) => r.tip === 0n);
+  check(
+    `zero-tip transactions get included (${paidBaseOnly.length} of ${rows.length} successful tx)`,
+    paidBaseOnly.length > 0,
+    paidBaseOnly.length > 0
+      ? `example: ${paidBaseOnly[0].hash} in block ${paidBaseOnly[0].block} paid ${gwei(paidBaseOnly[0].eff)} gwei = base fee`
+      : "no zero-tip transaction found in the window",
+  );
 
-// ── claim 4: balance locked above the base fee ───────────────────────────────
-console.log("\nclaim: wallets reserve more balance than the base fee requires\n");
+  // The strongest form of the claim: two transactions in the SAME block, one
+  // tipping and one not. If the tip were required for inclusion, the zero-tip
+  // one could not be sitting beside a paying one.
+  const sameBlock = blocksWithTxs.find((b) => {
+    const inBlock = rows.filter((r) => r.block === Number(BigInt(b.number)));
+    return inBlock.some((r) => r.tip === 0n) && inBlock.some((r) => r.tip > 0n);
+  });
+  check(
+    "a zero-tip and a tipping transaction share a block",
+    Boolean(sameBlock),
+    sameBlock
+      ? `block ${Number(BigInt(sameBlock.number))}: tips present ${rows
+          .filter((r) => r.block === Number(BigInt(sameBlock.number)))
+          .map((r) => `${gwei(r.tip)} gwei`)
+          .join(", ")}`
+      : "no such block in the window — the claim would be unproven here",
+  );
+});
 
-const overMaxFee = rows.filter((r) => r.maxFee != null && r.maxFee > r.base);
-const extraLock = overMaxFee.reduce((a, r) => a + (r.maxFee - r.base) * r.limit, 0n);
-const ratios = rows.filter((r) => r.used > 0n).map((r) => Number(r.limit) / Number(r.used)).sort((a, b) => a - b);
-const medianRatio = ratios.length ? ratios[Math.floor(ratios.length / 2)] : null;
+if (rows.length > 0) {
+  // ── claim 3: how much is spent above base ──────────────────────────────────
+  console.log("\nclaim: a measurable share of every fee is paid above the base fee\n");
+  const paidTotal = rows.reduce((a, r) => a + r.paid, 0n);
+  const tipTotal = rows.reduce((a, r) => a + r.tip * r.used, 0n);
+  const tipPct = paidTotal > 0n ? Number((tipTotal * 10000n) / paidTotal) / 100 : 0;
+  check(
+    `${tipPct.toFixed(2)}% of all fees paid went above the base fee`,
+    tipPct > 0,
+    `sample: ${rows.length} tx in ${new Set(rows.map((r) => r.block)).size} blocks; ${rows.filter((r) => r.tip > 0n).length} paid a tip, ${rows.filter((r) => r.tip === 0n).length} did not`,
+  );
 
-check(
-  `${overMaxFee.length} of ${rows.length} transactions set maxFee above the base fee`,
-  overMaxFee.length > 0,
-  overMaxFee.length > 0
-    ? `locking ${(Number(extraLock) / 1e18).toFixed(6)} PROS more than needed across the sample`
-    : "nobody overbid maxFee in this window",
-);
+  // ── claim 4: balance locked above the base fee ─────────────────────────────
+  console.log("\nclaim: wallets reserve more balance than the base fee requires\n");
+  const overMaxFee = rows.filter((r) => r.maxFee != null && r.maxFee > r.base);
+  const extraLock = overMaxFee.reduce((a, r) => a + (r.maxFee - r.base) * r.limit, 0n);
+  const ratios = rows.filter((r) => r.used > 0n).map((r) => Number(r.limit) / Number(r.used)).sort((a, b) => a - b);
+  const medianRatio = ratios.length ? ratios[Math.floor(ratios.length / 2)] : null;
 
-check(
-  `median gas limit is ${medianRatio ? medianRatio.toFixed(2) : "n/a"}x the gas actually used`,
-  medianRatio == null || medianRatio >= 1,
-  medianRatio && medianRatio > 1
-    ? `a limit above usage multiplies the balance that must be reserved`
-    : "gas limits were tight in this window",
-);
+  check(
+    `${overMaxFee.length} of ${rows.length} transactions set maxFee above the base fee`,
+    overMaxFee.length > 0,
+    overMaxFee.length > 0
+      ? `locking ${(Number(extraLock) / 1e18).toFixed(6)} PROS more than needed across the sample`
+      : "nobody overbid maxFee in this window",
+  );
+
+  check(
+    `median gas limit is ${medianRatio ? medianRatio.toFixed(2) : "n/a"}x the gas actually used`,
+    medianRatio == null || medianRatio >= 1,
+    medianRatio && medianRatio > 1
+      ? `a limit above usage multiplies the balance that must be reserved`
+      : "gas limits were tight in this window",
+  );
+
+  // ── arithmetic self-check on the sample ────────────────────────────────────
+  console.log("\narithmetic self-check\n");
+  const recomputed = rows.every((r) => r.paid === r.eff * r.used && r.tip === r.eff - r.base);
+  check("paid = effectiveGasPrice × gasUsed and tip = effective - base for every row", recomputed);
+}
 
 // ── claim 5: there is spare gas capacity, and the band claim holds ───────────
-console.log("\nclaim: blocks are far from full, so a higher bid buys nothing\n");
+await claim("blocks are far from full, so a higher bid buys nothing", async () => {
+  // Sampled independently of src/. Strided, because 200 consecutive blocks on
+  // this chain is one short burst of activity and says little about the rest.
+  const capNumbers = [];
+  for (let i = 0; i < 200; i++) {
+    const n = head - i * 1000;
+    if (n >= 1) capNumbers.push(n);
+  }
+  const capBlocks = [];
+  for (const n of capNumbers) {
+    const b = await rpc.call("eth_getBlockByNumber", [`0x${n.toString(16)}`, false]);
+    if (b) capBlocks.push({ block: n, used: BigInt(b.gasUsed), limit: BigInt(b.gasLimit) });
+  }
+  if (capBlocks.length === 0) throw new Error("no block header could be read for the capacity sample");
 
-// Sampled independently of src/. Strided, because 200 consecutive blocks on this
-// chain is one short burst of activity and says little about the rest of it.
-const capNumbers = [];
-for (let i = 0; i < 200; i++) {
-  const n = head - i * 1000;
-  if (n >= 1) capNumbers.push(n);
-}
-const capBlocks = [];
-for (const n of capNumbers) {
-  const b = await rpc.call("eth_getBlockByNumber", [`0x${n.toString(16)}`, false]);
-  if (b) capBlocks.push({ block: n, used: BigInt(b.gasUsed), limit: BigInt(b.gasLimit) });
-}
+  const sumUsed = capBlocks.reduce((a, b) => a + b.used, 0n);
+  const sumLimit = capBlocks.reduce((a, b) => a + b.limit, 0n);
+  const emptyCount = capBlocks.filter((b) => b.used === 0n).length;
+  const aggregate = sumLimit > 0n ? Number((sumUsed * 1000000n) / sumLimit) / 1e6 : 0;
+  const peak = capBlocks.reduce((m, b) => Math.max(m, Number(b.used) / Number(b.limit)), 0);
+  const peakBlock = capBlocks.find((b) => Number(b.used) / Number(b.limit) === peak)?.block ?? "?";
+  const band = aggregate > 0 ? 10 ** Math.floor(Math.log10(1 / aggregate)) : null;
 
-const sumUsed = capBlocks.reduce((a, b) => a + b.used, 0n);
-const sumLimit = capBlocks.reduce((a, b) => a + b.limit, 0n);
-const emptyCount = capBlocks.filter((b) => b.used === 0n).length;
-const aggregate = sumLimit > 0n ? Number((sumUsed * 1000000n) / sumLimit) / 1e6 : 0;
-const peak = capBlocks.reduce((m, b) => Math.max(m, Number(b.used) / Number(b.limit)), 0);
-const band = aggregate > 0 ? 10 ** Math.floor(Math.log10(1 / aggregate)) : null;
+  check(
+    `aggregate gas demand was ${(aggregate * 100).toFixed(5)}% of capacity over ${capBlocks.length} blocks spanning ${Math.max(...capBlocks.map((b) => b.block)) - Math.min(...capBlocks.map((b) => b.block))} blocks`,
+    aggregate < 0.01,
+    `${emptyCount} of ${capBlocks.length} blocks used no gas at all; busiest was ${(peak * 100).toFixed(3)}% full`,
+  );
 
-check(
-  `aggregate gas demand was ${(aggregate * 100).toFixed(5)}% of capacity over ${capBlocks.length} blocks spanning ${Math.max(...capBlocks.map((b) => b.block)) - Math.min(...capBlocks.map((b) => b.block))} blocks`,
-  aggregate < 0.01,
-  `${emptyCount} of ${capBlocks.length} blocks used no gas at all; busiest was ${(peak * 100).toFixed(3)}% full`,
-);
+  // The claim the report prints is a power of ten. Verify that specific number
+  // rather than the raw ratio: 1/aggregate must actually reach it.
+  check(
+    band ? `"at least ${band}x spare capacity" is arithmetically true` : "no band claimed",
+    band == null || 1 / aggregate >= band,
+    band ? `1 / ${aggregate.toExponential(3)} = ${Math.round(1 / aggregate)}x, so ${band}x is a safe floor` : "no gas was used in the window",
+  );
 
-// The claim the report prints is a power of ten. Verify that specific number
-// rather than the raw ratio: 1/aggregate must actually reach it.
-check(
-  band ? `"at least ${band}x spare capacity" is arithmetically true` : "no band claimed",
-  band == null || 1 / aggregate >= band,
-  band ? `1 / ${aggregate.toExponential(3)} = ${Math.round(1 / aggregate)}x, so ${band}x is a safe floor` : "no gas was used in the window",
-);
+  // A peak is one block, so it must never be used to claim more headroom than it
+  // supports. This is the bug the banded figure replaced.
+  check(
+    `busiest single block was ${(peak * 100).toFixed(3)}% full (block ${peakBlock})`,
+    peak < 0.5,
+    `peak-based headroom would have read ${peak > 0 ? Math.round(1 / peak) : "infinite"}x — the figure that used to swing between renders`,
+  );
+});
 
-// A peak is one block, so it must never be used to claim more headroom than it
-// supports. This is the bug the banded figure replaced.
-check(
-  `busiest single block was ${(peak * 100).toFixed(3)}% full (block ${capBlocks.find((b) => Number(b.used) / Number(b.limit) === peak)?.block ?? "?"})`,
-  peak < 0.5,
-  `peak-based headroom would have read ${peak > 0 ? Math.round(1 / peak) : "infinite"}x — the figure that used to swing between renders`,
-);
-
-// ── arithmetic self-check on the sample ──────────────────────────────────────
-console.log("\narithmetic self-check\n");
-const recomputed = rows.every((r) => r.paid === r.eff * r.used && r.tip === r.eff - r.base);
-check("paid = effectiveGasPrice × gasUsed and tip = effective - base for every row", recomputed);
-
+const unavailable = results.filter((r) => r.unavailable).length;
+const failed = results.filter((r) => !r.ok && !r.unavailable).length;
 const succeeded = results.filter((r) => r.ok).length;
-console.log(`\n${succeeded}/${results.length} checks passed`);
-if (succeeded !== results.length) {
-  console.log("\nfailed checks:");
-  for (const r of results.filter((x) => !x.ok)) console.log(`  - ${r.name}`);
-  process.exit(1);
+
+console.log(`\n${succeeded}/${results.length} checks passed` + (unavailable ? `, ${unavailable} unavailable` : ""));
+if (unavailable) {
+  console.log("\nunavailable claims (the node stopped answering — these are not confirmed):");
+  for (const r of results.filter((x) => x.unavailable)) console.log(`  - ${r.name}`);
 }
+if (failed) {
+  console.log("\nfailed checks:");
+  for (const r of results.filter((x) => !x.ok && !x.unavailable)) console.log(`  - ${r.name}`);
+}
+if (failed || unavailable) process.exit(1);

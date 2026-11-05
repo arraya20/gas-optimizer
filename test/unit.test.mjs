@@ -7,7 +7,16 @@ import { test, run, eq, throws, near, setFile } from "./harness.mjs";
 import { formatUnits, formatPROS, formatGwei, percent, groupDigits, toBigInt, parseUnits, InputError } from "../src/numbers.mjs";
 import { minimalFees, projectCost, advise } from "../src/cost.mjs";
 import { validateRequest } from "../src/analyze.mjs";
-import { buildPaymentRow, analysePayments, waitingVerdict, capacityFromBlocks, headroomBand, congestionLevel } from "../src/fees.mjs";
+import {
+  buildPaymentRow,
+  analysePayments,
+  waitingVerdict,
+  capacityFromBlocks,
+  headroomBand,
+  congestionLevel,
+  measureBaseFee,
+} from "../src/fees.mjs";
+import { createRpc, isTransientRpcError } from "../src/rpc.mjs";
 
 setFile("unit");
 const GWEI = 1_000_000_000n;
@@ -298,6 +307,136 @@ test("waiting is unproven when nobody was included without a tip", () => {
 test("waiting claims nothing without base fee history", () => {
   eq(waitingVerdict({ baseFee: null, analyse: null }).canHelp, null);
   eq(waitingVerdict({ baseFee: { distinctCount: null }, analyse: null }).canHelp, null);
+});
+
+// ── a throttled node is not a frozen market ─────────────────────────────────
+//
+// The old code set `frozen: distinctCount === 1`. One surviving window out of
+// four was therefore enough to announce that the price never moves — a market
+// conclusion drawn from a failed query.
+
+const hex = (n) => `0x${BigInt(n).toString(16)}`;
+
+function feeHistoryRpc({ values, failEnds = [] }) {
+  const calls = [];
+  return {
+    calls,
+    blockNumber: async () => 9_000_000,
+    call: async (method, params = []) => {
+      calls.push(method);
+      if (method === "eth_feeHistory") {
+        const end = Number(BigInt(params[1]));
+        if (failEnds.includes(end)) throw new Error("cu limit exceeded");
+        return { baseFeePerGas: values.map(hex), oldestBlock: hex(1), reward: null };
+      }
+      if (method === "eth_blockNumber") return hex(9_000_000);
+      if (method === "eth_getBlockByNumber") return { baseFeePerGas: hex(values[0]) };
+      throw new Error(`unexpected ${method}`);
+    },
+  };
+}
+
+test("frozen is only claimed when every window answered", async () => {
+  const flat = await measureBaseFee(feeHistoryRpc({ values: [10n * GWEI] }), { windowSize: 4 });
+  eq(flat.distinctCount, 1);
+  eq(flat.frozen, true, "all windows answered and the value never changed");
+  eq(flat.coverageComplete, true);
+  eq(flat.windowsFailed, 0);
+
+  // Same flat value, but two of the four windows were throttled.
+  const partial = await measureBaseFee(
+    feeHistoryRpc({ values: [10n * GWEI], failEnds: [9_000_000, 4_000_000] }),
+    { windowSize: 4 },
+  );
+  eq(partial.distinctCount, 1, "the surviving windows did return one value");
+  eq(partial.frozen, null, "one value from two windows is not evidence of a frozen market");
+  eq(partial.coverageComplete, false);
+  eq(partial.windowsFailed, 2);
+  eq(partial.windowsSucceeded, 2);
+  eq(partial.windowsAttempted, 4);
+});
+
+test("a market that moved is still reported as moving with partial coverage", async () => {
+  const moved = await measureBaseFee(feeHistoryRpc({ values: [9n * GWEI, 11n * GWEI], failEnds: [4_000_000] }), {
+    windowSize: 2,
+  });
+  eq(moved.distinctCount, 2);
+  eq(moved.frozen, null, "not fully covered, so the flat/frozen question stays open");
+  const v = waitingVerdict({ baseFee: moved, analyse: null });
+  eq(v.canHelp, true, "seeing two values proves a cheaper window exists, coverage or not");
+});
+
+test("waiting says nothing when no window answered at all", () => {
+  const v = waitingVerdict({
+    baseFee: {
+      distinctCount: 0,
+      distinctGwei: [],
+      blocksObserved: 0,
+      windows: [],
+      windowsAttempted: 4,
+      windowsSucceeded: 0,
+      windowsFailed: 4,
+      coverageComplete: false,
+    },
+    analyse: null,
+  });
+  eq(v.canHelp, null);
+  eq(v.reasons.join(" ").includes("undefined"), false, "no 'undefined gwei' in the reason");
+  eq(v.reasons.join(" ").includes("none of the 4"), true);
+});
+
+test("waiting is unproven when the flat reading came from partial coverage", () => {
+  const v = waitingVerdict({
+    baseFee: { ...frozenMarket, windowsAttempted: 4, windowsSucceeded: 1, windowsFailed: 3, coverageComplete: false },
+    analyse: { measured: true, zeroTipShare: "74", transactions: 773 },
+  });
+  eq(v.canHelp, null, "a flat value from one window cannot prove that holding is pointless");
+  eq(v.reasons.join(" ").includes("1 of 4"), true);
+});
+
+// ── retry policy ────────────────────────────────────────────────────────────
+
+test("only transient failures are retried", async () => {
+  const body = (jsonrpcError) => ({
+    ok: true,
+    status: 200,
+    json: async () => jsonrpcError,
+    text: async () => "",
+  });
+
+  // A rejected parameter is rejected every time; retrying it only wastes calls.
+  let permanentCalls = 0;
+  const permanent = createRpc({
+    retries: 3,
+    fetchImpl: async () => {
+      permanentCalls++;
+      return body({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "invalid params" } });
+    },
+  });
+  await permanent.call("eth_feeHistory", ["0x1", "0x1", []]).then(
+    () => eq(true, false, "should have thrown"),
+    (err) => eq(err.transient, false),
+  );
+  eq(permanentCalls, 1, "a permanent error must not be retried");
+
+  let throttledCalls = 0;
+  const throttled = createRpc({
+    retries: 2,
+    fetchImpl: async () => {
+      throttledCalls++;
+      if (throttledCalls < 3) {
+        return { ok: false, status: 429, text: async () => "slow down", json: async () => ({}) };
+      }
+      return body({ jsonrpc: "2.0", id: 1, result: "0x1" });
+    },
+  });
+  eq(await throttled.call("eth_blockNumber", []), "0x1");
+  eq(throttledCalls, 3, "429 is retried until it succeeds");
+
+  eq(isTransientRpcError({ code: -32011, message: "cu limit exceeded" }), true);
+  eq(isTransientRpcError({ code: -32005, message: "limit exceeded" }), true);
+  eq(isTransientRpcError({ code: -32602, message: "invalid params" }), false);
+  eq(isTransientRpcError({ code: -32000, message: "execution reverted" }), false);
 });
 
 // ── gas capacity ─────────────────────────────────────────────────────────────

@@ -59,6 +59,14 @@ export async function measureBaseFee(rpc, { offsets = [0, 200_000, 1_000_000, 5_
   const blocksObserved = windows.reduce((n, w) => n + (w.blocks || 0), 0);
   const latest = await rpc.call("eth_blockNumber").then(() => currentBaseFee(rpc));
 
+  // "The fee never moves" is a claim about the whole chain, so it can only be
+  // made from windows that actually answered. Before this, one surviving window
+  // out of four was enough to declare the market frozen, which turned a
+  // throttled node into a market conclusion.
+  const windowsFailed = windows.filter((w) => w.error).length;
+  const windowsSucceeded = windows.length - windowsFailed;
+  const coverageComplete = windows.length > 0 && windowsFailed === 0;
+
   return {
     windows,
     blocksObserved,
@@ -67,7 +75,13 @@ export async function measureBaseFee(rpc, { offsets = [0, 200_000, 1_000_000, 5_
     minWei: distinctOverall.length ? distinctOverall[0].toString() : null,
     maxWei: distinctOverall.length ? distinctOverall[distinctOverall.length - 1].toString() : null,
     currentWei: latest,
-    frozen: distinctOverall.length === 1,
+    windowsAttempted: windows.length,
+    windowsSucceeded,
+    windowsFailed,
+    coverageComplete,
+    // true = measured flat everywhere, false = measured to move, null = not enough
+    // windows answered to say either way.
+    frozen: distinctOverall.length === 0 ? null : coverageComplete ? distinctOverall.length === 1 : null,
     rewardAvailable: windows.some((w) => w.rewardAvailable),
   };
 }
@@ -417,11 +431,30 @@ export function waitingVerdict({ baseFee, analyse, capacity }) {
   if (!baseFee || baseFee.distinctCount == null) {
     return { canHelp: null, reasons: ["base fee history is unavailable, so no claim is made"] };
   }
+  // Zero distinct values means every window failed — there is no history to
+  // quote, and distinctGwei[0] would have rendered as "undefined gwei".
+  if (baseFee.distinctCount === 0) {
+    return {
+      canHelp: null,
+      reasons: [
+        `none of the ${baseFee.windowsAttempted ?? baseFee.windows.length} fee-history windows returned data, so nothing can be said about waiting`,
+      ],
+    };
+  }
   if (baseFee.distinctCount > 1) {
     reasons.push(`base fee took ${baseFee.distinctCount} distinct values (${baseFee.distinctGwei.join(", ")} gwei)`);
     return { canHelp: true, reasons };
   }
   reasons.push(`base fee held ${baseFee.distinctGwei[0]} gwei across ${baseFee.blocksObserved} blocks in ${baseFee.windows.length} windows`);
+
+  // A single surviving window cannot distinguish a frozen market from a run of
+  // failed queries. "Waiting ends" is a strong claim; it needs full coverage.
+  if (baseFee.coverageComplete === false) {
+    reasons.push(
+      `only ${baseFee.windowsSucceeded ?? baseFee.windows.length} of ${baseFee.windowsAttempted ?? baseFee.windows.length} requested windows answered, so "the fee never moves" is unproven`,
+    );
+    return { canHelp: null, reasons };
+  }
 
   // Demand side. A flat price only means "waiting cannot help" if there is also
   // nothing to bid against; a flat price with full blocks would still make

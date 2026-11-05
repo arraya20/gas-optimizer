@@ -95,7 +95,18 @@ function render(report) {
   fill($("market"), [
     ["base fee", m.baseFeeGwei ? `${m.baseFeeGwei} gwei` : "unreadable"],
     ["history", `${m.distinctCount} value(s) over ${num(m.blocksObserved)} blocks, ${m.windows.length} windows`],
-    ["frozen", m.frozen ? "yes — never moved in the measured windows" : "no"],
+    [
+      "frozen",
+      m.frozen === true
+        ? "yes — never moved in the measured windows"
+        : m.frozen === null
+          ? `unknown — ${m.windowsFailed ?? 0} of ${m.windowsAttempted ?? m.windows.length} windows failed`
+          : "no — the price moved",
+    ],
+    [
+      "windows answered",
+      `${num(m.windowsSucceeded ?? m.windows.length)} of ${num(m.windowsAttempted ?? m.windows.length)}`,
+    ],
     [
       "gas demand",
       cap.aggregateUtilisationPct == null ? "n/a" : `${cap.aggregateUtilisationPct}% of capacity`,

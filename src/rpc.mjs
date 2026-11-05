@@ -5,12 +5,15 @@
 // refuses to answer at all.
 
 export class RpcError extends Error {
-  constructor(message, { method, code, data, cause } = {}) {
+  constructor(message, { method, code, data, cause, transient = false } = {}) {
     super(message);
     this.name = "RpcError";
     this.method = method;
     this.code = code;
     this.data = data;
+    // Whether re-sending the same request could plausibly succeed. Only these
+    // are retried; a rejected parameter is rejected every time.
+    this.transient = transient;
     if (cause) this.cause = cause;
   }
 }
@@ -22,6 +25,21 @@ export const PHAROS = {
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * JSON-RPC errors that mean "ask again", as opposed to "your request is wrong".
+ *
+ * -32005 is the Ethereum "limit exceeded" code, -32011 is what this node returns
+ * when the compute-unit budget for the window is gone. Everything else — bad
+ * params (-32602), unknown method (-32601), reverted execution (-32000 with a
+ * revert message) — is deterministic and must not be retried.
+ */
+export function isTransientRpcError(error) {
+  if (!error) return false;
+  if (error.code === -32005 || error.code === -32011) return true;
+  const message = String(error.message ?? "");
+  return /rate.?limit|too many requests|cu limit|compute.?unit|temporarily|try again/i.test(message);
+}
 
 /**
  * @param {object} opts
@@ -48,7 +66,7 @@ export function createRpc({ url = PHAROS.rpc, retries = 2, timeoutMs = 20000, fe
         signal: controller.signal,
       });
     } catch (cause) {
-      throw new RpcError(`${method}: transport failed (${cause.message})`, { method, cause });
+      throw new RpcError(`${method}: transport failed (${cause.message})`, { method, cause, transient: true });
     } finally {
       clearTimeout(timer);
     }
@@ -59,6 +77,8 @@ export function createRpc({ url = PHAROS.rpc, retries = 2, timeoutMs = 20000, fe
       throw new RpcError(`${method}: HTTP ${res.status}${text ? ` — ${text.slice(0, 300)}` : ""}`, {
         method,
         code: res.status,
+        // 429 and 5xx are the node asking us to come back later. 4xx is our bug.
+        transient: res.status === 429 || res.status === 408 || res.status >= 500,
       });
     }
 
@@ -69,6 +89,7 @@ export function createRpc({ url = PHAROS.rpc, retries = 2, timeoutMs = 20000, fe
         method,
         code: body.error.code,
         data: body.error.data,
+        transient: isTransientRpcError(body.error),
       });
     }
     return body.result;
@@ -81,9 +102,11 @@ export function createRpc({ url = PHAROS.rpc, retries = 2, timeoutMs = 20000, fe
         return await callOnce(method, params);
       } catch (err) {
         last = err;
-        // A method the node does not have will not appear on retry.
-        const permanent = err.code === -32601 || err.code === -32602;
-        if (permanent || attempt === retries) break;
+        // Retry only what could plausibly change on a second try. Before this,
+        // every error except "method not found" was retried, so a bad parameter
+        // cost three round-trips and still failed — and, worse, made transient
+        // throttling indistinguishable from a permanent defect in the logs.
+        if (!err.transient || attempt === retries) break;
         await sleep(250 * (attempt + 1));
       }
     }

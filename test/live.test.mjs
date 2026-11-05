@@ -46,8 +46,27 @@ test("history was actually sampled across several disjoint windows", async () =>
 
 test("the frozen claim agrees with the distinct values it listed", async () => {
   const r = await report();
-  eq(r.market.frozen, r.market.distinctCount === 1, "frozen must mean exactly one distinct value");
-  eq(r.market.distinctGwei.length, r.market.distinctCount);
+  const m = r.market;
+  // frozen is tri-state: true = measured flat everywhere, false = measured to
+  // move, null = too few windows answered to say. A partial read must not be
+  // promoted into "the price never moves".
+  if (m.frozen === true) {
+    eq(m.distinctCount, 1, "frozen requires exactly one distinct value");
+    eq(m.windowsFailed, 0, "frozen requires every requested window to have answered");
+  }
+  if (m.frozen === false) {
+    eq(m.distinctCount > 1, true, "a price that moved has more than one distinct value");
+  }
+  if (m.coverageComplete === false) {
+    eq(m.frozen, null, "incomplete coverage cannot settle the flat/frozen question");
+    eq(m.windowsFailed > 0, true);
+  }
+  eq(m.distinctGwei.length, m.distinctCount);
+  eq(
+    m.windowsSucceeded + m.windowsFailed,
+    m.windowsAttempted,
+    "every attempted window is either answered or counted as failed",
+  );
 });
 
 test("capacity figures are plausible fractions", async () => {

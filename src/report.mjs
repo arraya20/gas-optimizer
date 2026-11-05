@@ -16,9 +16,17 @@ export function renderReport(report) {
   out.push(line(`  base fee     ${market.baseFeeGwei ?? "unreadable"} gwei`));
   out.push(
     line(
-      `  history      ${market.distinctCount} distinct value(s) over ${groupDigits(
-        market.blocksObserved,
-      )} blocks in ${market.windows.length} windows${market.frozen ? " — never moved" : ""}`,
+      market.distinctCount === 0
+        ? `  history      unreadable — none of ${market.windowsAttempted ?? market.windows.length} windows answered`
+        : `  history      ${market.distinctCount} distinct value(s) over ${groupDigits(
+            market.blocksObserved,
+          )} blocks in ${market.windows.length} windows${
+            market.frozen === true
+              ? " — never moved"
+              : market.frozen === null
+                ? ` — inconclusive, ${market.windowsFailed} of ${market.windowsAttempted} windows failed`
+                : ""
+          }`,
     ),
   );
   out.push(

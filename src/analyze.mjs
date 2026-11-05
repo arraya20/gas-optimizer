@@ -140,6 +140,12 @@ export async function analyze({ rpc, request, sampleBlocks = 250, stride = 800 }
       distinctCount: baseFee.distinctCount,
       distinctGwei: baseFee.distinctGwei,
       blocksObserved: baseFee.blocksObserved,
+      // How much of the requested history actually answered. `frozen: null`
+      // means "not enough windows", which is different from "it moved".
+      windowsAttempted: baseFee.windowsAttempted,
+      windowsSucceeded: baseFee.windowsSucceeded,
+      windowsFailed: baseFee.windowsFailed,
+      coverageComplete: baseFee.coverageComplete,
       windows: baseFee.windows.map((w) => ({
         end: w.end,
         blocks: w.blocks ?? 0,
@@ -247,6 +253,11 @@ function buildNotMeasured({ baseFee, analyse, waiting, sample }) {
   }
   if (!analyse.measured) {
     items.push("payment behaviour of recent transactions: no successful receipt was available in the sampled window");
+  }
+  if (baseFee.windowsFailed > 0) {
+    items.push(
+      `base-fee history for ${baseFee.windowsFailed} of ${baseFee.windowsAttempted} windows: those queries failed, so the price is described only by the ${baseFee.windowsSucceeded} window(s) that answered`,
+    );
   }
   if (waiting.canHelp === null) {
     items.push("whether waiting could ever lower the fee: the measurement was inconclusive");

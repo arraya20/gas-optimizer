@@ -119,6 +119,11 @@ good:
   tool does not simulate execution
 - complete coverage when blocks or receipts fail to load; the count of failures
   is reported alongside the statistics
+- whether the base fee is **frozen** when only some history windows answered —
+  `market.frozen` is `true` (measured flat in every window), `false` (measured to
+  move) or `null` (not enough windows answered, so no claim). The same rule
+  governs `waiting.canHelp`: a flat value from a partial window cannot prove that
+  holding a transaction is pointless
 
 ## Evidence
 
@@ -173,10 +178,16 @@ expected; what must not move is which side of each threshold the chain lands on.
 ## Tests
 
 ```bash
-npm test            # 56 offline tests: 44 unit + 12 API
+npm test            # 61 offline tests: 49 unit + 12 API
 npm run test:live   # 15 tests against the real node, shape-only
 npm run verify:chain  # 10 checks re-derived from raw blocks, no src/ imports
 ```
+
+`verify:chain` keeps its own JSON-RPC client so a defect in `src/rpc.mjs` cannot
+hide in the verifier. It retries only transient failures (HTTP 429/5xx,
+`-32005`, `-32011`); when the node stops answering mid-claim, that claim is
+printed as `unavailable` — neither confirmed nor refuted — the remaining claims
+still run, and the process exits non-zero.
 
 One of the live tests exists purely to catch the regression above: it samples two
 independent strided windows and requires them to agree on the headroom band, not
