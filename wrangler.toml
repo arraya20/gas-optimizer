@@ -1,0 +1,8 @@
+name = "gas-fee-optimizer"
+compatibility_date = "2026-01-01"
+pages_build_output_dir = "public"
+
+# The Pages Function in functions/ runs on workerd:
+#   · no process, no node:fs — web APIs only
+#   · subrequests are budgeted by plan, which is why the API caps its sample
+#     window at 60 blocks instead of the CLI's 250

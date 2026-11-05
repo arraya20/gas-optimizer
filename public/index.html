@@ -1,39 +1,81 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Pharos Gas Fee Optimizer</title>
-  <style>
-    body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; max-width: 800px; margin: 0 auto; }
-    .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
-    input, button { padding: 10px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #fff; margin: 4px; }
-    button { background: #6366f1; cursor: pointer; }
-  </style>
-</head>
-<body>
-  <h1>⛽ Pharos Gas Fee Optimizer</h1>
-  <div class="card">
-    <label>Current Gas Price (Gwei):</label> <input id="currentGas" value="12.4"><br>
-    <label>Max Willing Gas Price (Gwei):</label> <input id="targetGas" value="15.0"><br>
-    <button id="evalBtn">Evaluate Timing</button>
-  </div>
-  <div id="output"></div>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>gas fee · Pharos</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>gas fee</h1>
+        <p class="sub">What a Pharos transaction should pay, measured from the chain rather than estimated.</p>
+      </header>
 
-  <script type="module">
-    import { evaluateSubmissionTiming } from "./optimizer.mjs";
-    document.getElementById("evalBtn").onclick = () => {
-      const res = evaluateSubmissionTiming({
-        currentGasGwei: document.getElementById("currentGas").value,
-        targetMaxGasGwei: document.getElementById("targetGas").value,
-        deadlineTimestamp: Date.now() + 600000
-      });
-      document.getElementById("output").innerHTML = `
-        <div class="card">
-          <h3>Decision: ${res.shouldExecute ? '🟢 EXECUTE NOW' : '🟡 HOLD TRANSACTION'}</h3>
-          <p>${res.reason}</p>
+      <form id="form" novalidate>
+        <div class="grid">
+          <label>
+            <span>gas limit</span>
+            <input id="gasLimit" name="gasLimit" inputmode="numeric" value="162849" required />
+          </label>
+          <label>
+            <span>gas expected to use</span>
+            <input id="gasUsed" name="gasUsed" inputmode="numeric" placeholder="same as limit" />
+          </label>
+          <label>
+            <span>maxFee you were about to set <em>gwei</em></span>
+            <input id="maxFeeGwei" name="maxFeeGwei" inputmode="decimal" placeholder="22.91779976" />
+          </label>
+          <label>
+            <span>tip you were about to set <em>gwei</em></span>
+            <input id="tipGwei" name="tipGwei" inputmode="decimal" placeholder="0" />
+          </label>
         </div>
-      `;
-    };
-  </script>
-</body>
+        <div class="actions">
+          <button type="submit" id="submit">measure</button>
+          <span class="hint">base fee and tip statistics always come from the node</span>
+        </div>
+      </form>
+
+      <p id="error" class="error" hidden></p>
+
+      <section id="result" hidden>
+        <div class="verdict-row">
+          <span id="verdict" class="verdict">—</span>
+          <span id="verdictNote" class="verdict-note"></span>
+        </div>
+
+        <ul id="reasons" class="reasons"></ul>
+
+        <div class="panels">
+          <section>
+            <h2>market</h2>
+            <dl id="market"></dl>
+          </section>
+          <section>
+            <h2>cost</h2>
+            <dl id="cost"></dl>
+          </section>
+        </div>
+
+        <section>
+          <h2>sample</h2>
+          <dl id="sample"></dl>
+        </section>
+
+        <section id="waiting-section">
+          <h2>can waiting help</h2>
+          <p id="waiting"></p>
+          <ul id="waitingReasons" class="reasons small"></ul>
+        </section>
+      </section>
+
+      <section id="notMeasuredSection" class="not-measured">
+        <h2>not measured</h2>
+        <ul id="notMeasured"></ul>
+      </section>
+    </main>
+    <script src="app.js" type="module"></script>
+  </body>
 </html>

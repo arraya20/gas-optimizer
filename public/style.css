@@ -1,0 +1,252 @@
+/* Neutral paper, one accent per verdict. No gradients, no shadows, no decoration
+   that is not carrying information. */
+
+:root {
+  --ink: #16181d;
+  --ink-soft: #5a6068;
+  --ink-faint: #8b929b;
+  --rule: #e2e4e8;
+  --paper: #fbfbfc;
+  --card: #ffffff;
+
+  --ok: #1d7a4b;
+  --warn: #8a5a00;
+  --bad: #a8321f;
+  --neutral: #43506b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--paper);
+}
+
+body {
+  margin: 0;
+  padding: 3rem 1.25rem 6rem;
+  color: var(--ink);
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  overflow-x: hidden;
+}
+
+main {
+  max-width: 62rem;
+  margin: 0 auto;
+}
+
+header h1 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin: 0 0 0.35rem;
+}
+
+.sub {
+  margin: 0 0 2rem;
+  color: var(--ink-soft);
+  max-width: 46rem;
+}
+
+/* form */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 1rem 1.25rem;
+}
+
+label {
+  display: block;
+}
+
+label span {
+  display: block;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 0.35rem;
+}
+
+label em {
+  font-style: normal;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+input {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+input:focus {
+  outline: none;
+  border-color: var(--neutral);
+}
+
+.actions {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+button {
+  padding: 0.5rem 1.4rem;
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  background: var(--ink);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.hint {
+  color: var(--ink-faint);
+  font-size: 0.8rem;
+}
+
+.error {
+  margin: 1.5rem 0 0;
+  padding: 0.7rem 0.9rem;
+  border-left: 2px solid var(--bad);
+  background: #fdf3f1;
+  color: var(--bad);
+  font-variant-numeric: tabular-nums;
+}
+
+/* result */
+
+#result {
+  margin-top: 2.5rem;
+}
+
+.verdict-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.verdict {
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.v-ALREADY_MINIMAL {
+  color: var(--ok);
+}
+.v-OVER_LOCKED,
+.v-NO_DECLARED_FEE {
+  color: var(--warn);
+}
+.v-OVERPAYING,
+.v-TIP_ABOVE_BASE {
+  color: var(--bad);
+}
+.v-UNMEASURABLE {
+  color: var(--ink-faint);
+}
+
+.verdict-note {
+  color: var(--ink-soft);
+}
+
+.reasons {
+  margin: 0.9rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--ink-soft);
+}
+
+.reasons li + li {
+  margin-top: 0.3rem;
+}
+
+.reasons.small {
+  font-size: 0.88rem;
+}
+
+h2 {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-weight: 600;
+  margin: 2rem 0 0.6rem;
+}
+
+.panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 0 3rem;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1.25rem;
+  margin: 0;
+}
+
+dt {
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+}
+
+dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+#waiting {
+  margin: 0 0 0.4rem;
+}
+
+.not-measured {
+  margin-top: 3rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--rule);
+}
+
+.not-measured ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+}
+
+.not-measured li + li {
+  margin-top: 0.45rem;
+}
+
+@media (max-width: 34rem) {
+  body {
+    padding: 2rem 1rem 4rem;
+  }
+  dl {
+    grid-template-columns: 1fr;
+    gap: 0.1rem;
+  }
+  dd {
+    text-align: left;
+    margin-bottom: 0.5rem;
+  }
+}
