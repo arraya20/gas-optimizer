@@ -8,13 +8,47 @@ node bin/gas-fee.mjs advise --gas-limit 162849 --gas-used 162849 \
   --max-fee-gwei 22.91779976 --tip-gwei 8.83464938
 ```
 
-## Why this is not a price-timing tool
+## Hold a transaction until gas is favorable, never past the deadline
 
-The inherited scaffold monitored a gas price, compared it against a target, and
-held transactions until the price dropped. It took that price from the caller, so
-whoever submitted the request chose the answer.
+Sign a transaction elsewhere (`cast mktx`, ethers, a wallet) and hand over the
+signed bytes. This tool never sees a key.
 
-Two questions had to be answered before building anything:
+```bash
+# dry run: broadcasts nothing, reports worst-case figures
+node bin/gas-fee.mjs hold --raw-tx 0x02f8... --deadline-minutes 10 --dry-run
+
+# live: hold until base fee <= 8 gwei, broadcast by the deadline regardless
+node bin/gas-fee.mjs hold --raw-tx-file signed.txt --deadline-minutes 10 --target-gwei 8
+```
+
+| Requirement | How it is met |
+|---|---|
+| Track gas price over time, show history | A Durable Object alarm samples the base fee every 60 s into a capped history; `GET /api/history` and the dashboard chart read it back. `moved` is computed from the samples, so a flat line is reported as flat. |
+| Accept a transaction with a deadline, hold until favorable or deadline | `POST /api/jobs` with `rawTx` + `deadlineMinutes` / `deadlineSeconds` / `deadlineAt`. Favorable means base fee <= `targetBaseFeeGwei` (default: the price at request time). |
+| Report gas paid vs price at request time | On the receipt: `gasUsed x effectiveGasPrice` against the same gas priced at the request-time quote, as `SAVED` / `EXTRA` / `SAME` with the difference in PROS and percent. |
+| Never miss the deadline | At `deadline - 20 s` the job stops waiting and broadcasts at any price. Retries on transient failure, and recognises a send that landed but timed out by its hash. |
+
+What the deadline guarantee is, exactly: **broadcast**, not inclusion. If the node
+is unreachable for the whole retry budget the job ends `FAILED` and says so. A
+broadcast that lands after the deadline is flagged `late`. A deadline closer than
+30 s is refused at creation, because it cannot leave room to broadcast and retry.
+
+Statuses: `HOLDING`, `SUBMITTED`, `SETTLED`, `REVERTED`, `UNCONFIRMED` (no receipt
+in 10 min, no paid figure invented), `SIMULATED` (dry run), `FAILED`, `CANCELLED`.
+
+The API never returns the signed transaction, and drops it from storage once the
+job stops holding. The job id (128-bit random) is the only credential; there is no
+list endpoint.
+
+On Pharos today the base fee does not move (below), so a default-target job meets
+its target on the first check and submits immediately. That is the correct
+outcome and is reported as `FAVORABLE`. To watch a job hold and fire at the
+deadline, set `--target-gwei` below the current base fee.
+
+## Why price timing alone does not pay off here
+
+The inherited scaffold took the price from the caller, so whoever submitted the
+request chose the answer. Two questions had to be answered first:
 
 **Does the gas price move on Pharos?** No. The base fee is 10 gwei in every block
 header checked, spanning 8,000,000 blocks, and one value across four disjoint
@@ -25,9 +59,10 @@ capacity across 200 blocks spanning 199,000 blocks; 144 of those blocks used no 
 at all, and the busiest single block was 0.049% full. Spare capacity is at least
 **10,000×**.
 
-So "wait for a cheaper window" describes an event that does not occur. A tool
-that implemented it would delay every transaction forever and call that
-optimisation. This repo answers the question that does have an answer:
+So "wait for a cheaper window" describes an event that does not currently occur.
+The hold logic therefore never promises savings: it reports the measured outcome
+against the request-time price, `SAME` when the price never moved. The advisor
+below covers the part that does have an answer on a fixed-price chain:
 
 > the price is fixed, so the only thing you control is **what you set** and
 > **how much balance you tie up doing it**.
@@ -178,7 +213,7 @@ expected; what must not move is which side of each threshold the chain lands on.
 ## Tests
 
 ```bash
-npm test            # 61 offline tests: 49 unit + 12 API
+npm test            # offline: 49 unit + 39 hold/scheduler + 12 API
 npm run test:live   # 15 tests against the real node, shape-only
 npm run verify:chain  # 10 checks re-derived from raw blocks, no src/ imports
 ```
@@ -216,17 +251,25 @@ of activity dressed up as a sample. 60 headers at a stride of 800 covers about
 
 ## Deploying
 
-Cloudflare Pages, no build step, no environment variables:
+One Cloudflare Worker: static dashboard, API, and the Durable Object that owns
+jobs and the alarm. A Pages Function cannot own an alarm, and the alarm is what
+keeps the deadline honest while no browser is open.
 
 ```bash
-npx wrangler pages deploy public
+npx wrangler login
+npm run deploy        # wrangler deploy
 ```
 
-`wrangler.toml` points `pages_build_output_dir` at `public` and pins
-`compatibility_date`. The Function in `functions/api/analyze.js` reaches the
-public Pharos RPC directly; there is no key to configure.
+No secrets. Optional `PHAROS_RPC` var overrides the public RPC. Routes:
+`POST /api/analyze`, `POST /api/jobs`, `GET|DELETE /api/jobs/:id`,
+`GET /api/history`.
 
-Status: the code has been exercised in `workerd` locally (`wrangler pages dev`,
-`POST /api/analyze` → 200), but **the dashboard has never been deployed to a
-public URL**. Treat deployment as unverified until a real request to a real Pages
-domain succeeds — local workerd and the edge are separate claims.
+Verification status, stated plainly:
+
+- `wrangler deploy --dry-run` bundles the Worker and both bindings.
+- The engine, Durable Object shell and alarm logic are covered by `test/hold.test.mjs`
+  on a scripted node and a virtual clock.
+- **Not yet done:** a deploy to a public URL, and a live broadcast of a real signed
+  transaction on Pharos. Both need a Cloudflare login and a funded key, which this
+  repo does not hold. Do both and record the tx hash before claiming the
+  end-to-end path.

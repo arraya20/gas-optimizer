@@ -1,8 +1,23 @@
 name = "gas-fee-optimizer"
+main = "src/worker.mjs"
 compatibility_date = "2026-01-01"
-pages_build_output_dir = "public"
 
-# The Pages Function in functions/ runs on workerd:
-#   · no process, no node:fs — web APIs only
-#   · subrequests are budgeted by plan, which is why the API caps its sample
-#     window at 60 blocks instead of the CLI's 250
+# One Worker: static dashboard + API + the Durable Object that holds jobs and
+# the alarm. A Pages Function cannot own an alarm, and the alarm is what makes
+# "never miss the deadline" true while no browser tab is open.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[[durable_objects.bindings]]
+name = "OPTIMIZER"
+class_name = "Optimizer"
+
+# SQLite-backed storage: the only kind available on the free plan.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Optimizer"]
+
+# Runtime notes (workerd): no process, no node:fs. Web APIs only.
+# /api/analyze caps its sample at 60 blocks to stay inside the subrequest budget.

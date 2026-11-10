@@ -250,3 +250,135 @@ dd {
     margin-bottom: 0.5rem;
   }
 }
+
+/* hold a transaction */
+
+.hold {
+  margin-bottom: 3.5rem;
+  padding-bottom: 2rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.hold h2,
+.advisor-head h2 {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin: 0 0 0.6rem;
+}
+
+.advisor-head {
+  margin-top: 0.5rem;
+}
+
+.sub.small {
+  font-size: 0.85rem;
+  margin-bottom: 1.25rem;
+}
+
+textarea {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--card);
+  color: var(--ink);
+  font: 0.8rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  resize: vertical;
+  word-break: break-all;
+}
+
+textarea:focus {
+  outline: none;
+  border-color: var(--neutral);
+}
+
+label.check input {
+  width: auto;
+  margin-right: 0.4rem;
+}
+
+label.check small {
+  color: var(--ink-faint);
+  font-size: 0.8rem;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--ink);
+}
+
+#job {
+  margin-top: 2rem;
+}
+
+.events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.events li {
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-soft);
+}
+
+.events li b {
+  display: inline-block;
+  min-width: 6.5rem;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.s-SETTLED,
+.s-SIMULATED,
+.s-SUBMITTED {
+  color: var(--ok);
+}
+
+.s-HOLDING,
+.s-CANCELLED,
+.s-UNCONFIRMED {
+  color: var(--warn);
+}
+
+.s-FAILED,
+.s-REVERTED {
+  color: var(--bad);
+}
+
+.history {
+  margin-top: 2rem;
+}
+
+.chart {
+  border: 1px solid var(--rule);
+  background: var(--card);
+  height: 7rem;
+}
+
+.chart svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.chart polyline {
+  fill: none;
+  stroke: var(--neutral);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart .empty {
+  padding: 2.4rem 1rem;
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 0.85rem;
+}

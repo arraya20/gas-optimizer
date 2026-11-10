@@ -8,9 +8,40 @@ version: 2.0.0
 
 ## Safety boundary
 
-Read-only advisor. It never signs, never broadcasts, and never asks for a private
-key. It answers one question — is this fee setting minimal for this transaction —
-and stops there.
+Two modes.
+
+- **Advise** (`/api/analyze`, `gas-fee advise`): read-only. Answers whether a fee
+  setting is minimal and stops there.
+- **Hold** (`/api/jobs`, `gas-fee hold`): relays a transaction the caller already
+  signed. It never signs, never holds or asks for a private key (`privateKey`,
+  `mnemonic`, `seed` are rejected), and refuses a transaction signed for another
+  chain. The only thing it ever broadcasts is the caller's own signed bytes, at the
+  time the caller's deadline and target dictate.
+
+The signed transaction is never returned by the API and is dropped from storage
+once the job stops holding. The 128-bit job id is the only credential.
+
+## Hold procedure
+
+1. Validate: `rawTx` + exactly one deadline form (`deadlineAt`, `deadlineMinutes`,
+   `deadlineSeconds`), optional `targetBaseFeeGwei`, optional `dryRun`. Reject
+   market fields and conclusions (`baseFee`, `gasPrice`, `quotedPrice`, `verdict`,
+   `savings`, `status`). Deadline must be 30 s to 7 days away.
+2. Decode the signed transaction (legacy, type 1, type 2); check chain id; record
+   the price at request time from the latest block.
+3. Poll the base fee. Broadcast when it is at or below the target (`FAVORABLE`), or
+   at `deadline - 20 s` at any price (`DEADLINE`). Retry transient failures; look the
+   hash up before resending.
+4. On the receipt, report gas actually paid against the same gas at the request-time
+   price: `SAVED`, `EXTRA` or `SAME`.
+
+The deadline guarantees broadcast, not inclusion. Report `FAILED`, `late` and
+`UNCONFIRMED` as they are; never invent a hash or a paid figure. `dryRun` reports
+worst-case figures only and says so.
+
+CLI hold exit codes: `0` settled or simulated, `1` failed / reverted / unconfirmed,
+`2` bad input. History: `GET /api/history`, sampled every 60 s by a Durable Object
+alarm; `moved` is computed from the samples.
 
 ## Input
 

@@ -13,6 +13,77 @@
         <p class="sub">What a Pharos transaction should pay, measured from the chain rather than estimated.</p>
       </header>
 
+      <section id="hold" class="hold">
+        <h2>hold a transaction</h2>
+        <p class="sub small">
+          Paste a transaction you signed elsewhere (cast, ethers, a wallet). It is held until the base fee is at or
+          below your target, and broadcast no later than the deadline whatever the price. No key is ever sent here.
+        </p>
+        <form id="holdForm" novalidate>
+          <label>
+            <span>signed transaction <em>0x…</em></span>
+            <textarea id="rawTx" name="rawTx" rows="3" spellcheck="false" autocomplete="off" placeholder="0x02f8…"></textarea>
+          </label>
+          <div class="grid">
+            <label>
+              <span>deadline <em>minutes from now</em></span>
+              <input id="deadlineMinutes" name="deadlineMinutes" inputmode="decimal" value="10" />
+            </label>
+            <label>
+              <span>target base fee <em>gwei, blank = price now</em></span>
+              <input id="targetGwei" name="targetGwei" inputmode="decimal" placeholder="price at request time" />
+            </label>
+            <label class="check">
+              <span>dry run</span>
+              <input id="dryRun" name="dryRun" type="checkbox" />
+              <small>broadcast nothing; report worst-case figures only</small>
+            </label>
+          </div>
+          <div class="actions">
+            <button type="submit" id="holdSubmit">hold</button>
+            <span class="hint">the deadline guarantees broadcast, not inclusion</span>
+          </div>
+        </form>
+        <p id="holdError" class="error" hidden></p>
+
+        <div id="job" hidden>
+          <div class="verdict-row">
+            <span id="jobStatus" class="verdict">—</span>
+            <span id="jobNote" class="verdict-note"></span>
+          </div>
+          <ul id="jobWarnings" class="reasons small"></ul>
+          <div class="panels">
+            <section>
+              <h2>job</h2>
+              <dl id="jobFacts"></dl>
+            </section>
+            <section>
+              <h2>paid vs request time</h2>
+              <dl id="jobReport"></dl>
+            </section>
+          </div>
+          <section>
+            <h2>events</h2>
+            <ul id="jobEvents" class="events"></ul>
+          </section>
+          <div class="actions">
+            <button type="button" id="jobCancel" class="secondary" hidden>cancel</button>
+            <span class="hint" id="jobLink"></span>
+          </div>
+        </div>
+
+        <section class="history">
+          <h2>base fee history</h2>
+          <div id="chart" class="chart"></div>
+          <p id="historyNote" class="hint">loading…</p>
+          <dl id="historyFacts"></dl>
+        </section>
+      </section>
+
+      <header class="advisor-head">
+        <h2>check a fee setting</h2>
+      </header>
+
       <form id="form" novalidate>
         <div class="grid">
           <label>
@@ -77,5 +148,6 @@
       </section>
     </main>
     <script src="app.js" type="module"></script>
+    <script src="hold.js" type="module"></script>
   </body>
 </html>

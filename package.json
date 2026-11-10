@@ -7,10 +7,12 @@
     "gas-fee": "bin/gas-fee.mjs"
   },
   "scripts": {
-    "test": "node test/unit.test.mjs && node test/api.test.mjs",
+    "test": "node test/unit.test.mjs && node test/hold.test.mjs && node test/api.test.mjs",
     "test:live": "node test/live.test.mjs",
     "verify:chain": "node scripts/verify-chain.mjs",
-    "dev": "wrangler pages dev public --compatibility-date=2026-01-01",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "hold": "node bin/gas-fee.mjs hold",
     "advise": "node bin/gas-fee.mjs advise"
   },
   "engines": {
