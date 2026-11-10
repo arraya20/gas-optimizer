@@ -65,9 +65,58 @@ function el(tag, text, cls) {
   return n;
 }
 
+function shortHash(h) {
+  if (typeof h !== "string" || !/^0x[0-9a-fA-F]{20,}$/.test(h)) return h;
+  return `${h.slice(0, 10)}…${h.slice(-8)}`;
+}
+
+function hashNode(h) {
+  if (!h || typeof h !== "string") return "—";
+  const wrap = el("span", null, "hash-wrap");
+  const code = el("code", shortHash(h), "hash-chip");
+  code.title = h;
+  const btn = el("button", "copy", "copy-btn");
+  btn.type = "button";
+  btn.title = `Copy ${h}`;
+  btn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(h);
+      btn.textContent = "copied";
+      setTimeout(() => {
+        btn.textContent = "copy";
+      }, 1500);
+    } catch {
+      btn.textContent = "failed";
+    }
+  });
+  wrap.append(code, btn);
+  return wrap;
+}
+
+function formatEventMessage(msg) {
+  const frag = document.createDocumentFragment();
+  if (!msg) return frag;
+  const parts = String(msg).split(/(0x[0-9a-fA-F]{64})/g);
+  for (const part of parts) {
+    if (/^0x[0-9a-fA-F]{64}$/.test(part)) {
+      const code = el("code", shortHash(part), "hash-chip");
+      code.title = part;
+      frag.append(code);
+    } else if (part) {
+      frag.append(document.createTextNode(part));
+    }
+  }
+  return frag;
+}
+
 function fill(dl, rows) {
   dl.replaceChildren(
-    ...rows.flatMap(([k, v]) => [el("dt", k), el("dd", v ?? "—")]),
+    ...rows.flatMap(([k, v]) => {
+      const dd = el("dd");
+      if (v instanceof Node) dd.append(v);
+      else dd.textContent = v ?? "—";
+      return [el("dt", k), dd];
+    }),
   );
 }
 
@@ -216,7 +265,7 @@ function renderJob(j) {
 
   fill($("jobFacts"), [
     ["mode", j.mode === "dryRun" ? "dry run" : "live"],
-    ["tx hash", j.submit?.txHash ?? j.tx.hash],
+    ["tx hash", hashNode(j.submit?.txHash ?? j.tx.hash)],
     ["deadline", `${when(j.deadlineAt)}`],
     ["price at request", `${j.quote.pricePerGasGwei} gwei (base fee ${j.quote.baseFeeGwei})`],
     ["target base fee", `${j.policy.targetBaseFeeGwei} gwei (${j.policy.targetSource})`],
@@ -247,7 +296,11 @@ function renderJob(j) {
   $("jobEvents").replaceChildren(
     ...[...j.events].reverse().map((e) => {
       const li = el("li");
-      li.append(el("b", e.type), document.createTextNode(`${new Date(e.at).toLocaleTimeString()} · ${e.message}`));
+      li.append(
+        el("b", e.type),
+        document.createTextNode(`${new Date(e.at).toLocaleTimeString()} · `),
+        formatEventMessage(e.message),
+      );
       return li;
     }),
   );
