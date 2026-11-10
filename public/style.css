@@ -198,9 +198,13 @@ h2 {
   gap: 0 3rem;
 }
 
+.panels > section {
+  min-width: 0;
+}
+
 dl {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: max-content minmax(0, 1fr);
   gap: 0.35rem 1.25rem;
   margin: 0;
 }
@@ -212,8 +216,11 @@ dt {
 
 dd {
   margin: 0;
+  min-width: 0;
   font-variant-numeric: tabular-nums;
   text-align: right;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 #waiting {
@@ -327,11 +334,14 @@ button.secondary {
   padding: 0.25rem 0;
   border-bottom: 1px solid var(--rule);
   color: var(--ink-soft);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .events li b {
   display: inline-block;
-  min-width: 6.5rem;
+  min-width: 7.25rem;
+  margin-right: 0.5rem;
   color: var(--ink);
   font-weight: 600;
 }

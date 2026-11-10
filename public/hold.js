@@ -247,7 +247,7 @@ function renderJob(j) {
   $("jobEvents").replaceChildren(
     ...[...j.events].reverse().map((e) => {
       const li = el("li");
-      li.append(el("b", e.type), document.createTextNode(`${new Date(e.at).toLocaleTimeString()}  ${e.message}`));
+      li.append(el("b", e.type), document.createTextNode(`${new Date(e.at).toLocaleTimeString()} · ${e.message}`));
       return li;
     }),
   );
