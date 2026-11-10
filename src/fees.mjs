@@ -19,8 +19,11 @@ import { toNumber } from "./rpc.mjs";
  * @param {number[]} [opts.offsets]  how far back each window ends, in blocks
  * @param {number} [opts.windowSize]
  */
-export async function measureBaseFee(rpc, { offsets = [0, 200_000, 1_000_000, 5_000_000], windowSize = 1024 } = {}) {
-  const head = await rpc.blockNumber();
+export async function measureBaseFee(
+  rpc,
+  { offsets = [0, 200_000, 1_000_000, 5_000_000], windowSize = 1024, head: givenHead } = {},
+) {
+  const head = givenHead ?? (await rpc.blockNumber());
   const windows = [];
   const allValues = new Set();
 
@@ -57,7 +60,7 @@ export async function measureBaseFee(rpc, { offsets = [0, 200_000, 1_000_000, 5_
 
   const distinctOverall = [...allValues].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const blocksObserved = windows.reduce((n, w) => n + (w.blocks || 0), 0);
-  const latest = await rpc.call("eth_blockNumber").then(() => currentBaseFee(rpc));
+  const latest = await currentBaseFee(rpc);
 
   // "The fee never moves" is a claim about the whole chain, so it can only be
   // made from windows that actually answered. Before this, one surviving window
@@ -242,8 +245,11 @@ export async function measureCapacity(rpc, { sampleBlocks = 192, stride = 800 } 
  * silently drops half its blocks reports statistics about a different sample
  * than the one it names.
  */
-export async function sampleTransactions(rpc, { blocks = 250, stride = 800, concurrency = 16 } = {}) {
-  const head = await rpc.blockNumber();
+export async function sampleTransactions(
+  rpc,
+  { blocks = 250, stride = 800, concurrency = 16, head: givenHead, maxReceipts = Infinity } = {},
+) {
+  const head = givenHead ?? (await rpc.blockNumber());
   const numbers = [];
   for (let i = 0; i < blocks; i++) {
     const n = head - i * stride;
@@ -275,12 +281,13 @@ export async function sampleTransactions(rpc, { blocks = 250, stride = 800, conc
     }
   }
 
+  const receiptsToFetch = Number.isFinite(maxReceipts) ? pending.slice(0, Math.max(0, maxReceipts)) : pending;
   const failedReceipts = [];
   const rows = [];
   let rc = 0;
   async function receiptWorker() {
-    while (rc < pending.length) {
-      const item = pending[rc++];
+    while (rc < receiptsToFetch.length) {
+      const item = receiptsToFetch[rc++];
       let receipt;
       try {
         receipt = await rpc.call("eth_getTransactionReceipt", [item.tx.hash]);
@@ -292,7 +299,7 @@ export async function sampleTransactions(rpc, { blocks = 250, stride = 800, conc
       if (row) rows.push(row);
     }
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, pending.length)) }, receiptWorker));
+  await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, receiptsToFetch.length)) }, receiptWorker));
 
   return {
     window: {

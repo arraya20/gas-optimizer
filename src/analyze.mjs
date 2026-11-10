@@ -96,13 +96,13 @@ const unwrap = (v) => (v && typeof v === "object" && "wei" in v ? v.wei : v);
  * @param {object} p.request  already validated
  * @param {number} [p.sampleBlocks]
  */
-export async function analyze({ rpc, request, sampleBlocks = 250, stride = 800 }) {
+export async function analyze({ rpc, request, sampleBlocks = 250, stride = 800, maxReceipts = Infinity }) {
   const chainId = await rpc.chainId();
   const head = await rpc.blockNumber();
 
   const [baseFee, sample] = await Promise.all([
-    measureBaseFee(rpc, { windowSize: 512 }),
-    sampleTransactions(rpc, { blocks: sampleBlocks, stride, concurrency: 16 }),
+    measureBaseFee(rpc, { windowSize: 512, head }),
+    sampleTransactions(rpc, { blocks: sampleBlocks, stride, concurrency: 16, head, maxReceipts }),
   ]);
 
   // Capacity comes from the same blocks the payment sample used. One report, one

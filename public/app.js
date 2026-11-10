@@ -38,7 +38,7 @@ async function run() {
   }
 
   try {
-    const res = await fetch("/api/analyze?sample=40", {
+    const res = await fetch("/api/analyze?sample=20", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),

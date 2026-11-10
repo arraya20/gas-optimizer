@@ -16,13 +16,13 @@
       <section id="hold" class="hold">
         <h2>hold a transaction</h2>
         <p class="sub small">
-          Paste a transaction you signed elsewhere (cast, ethers, a wallet). It is held until the base fee is at or
-          below your target, and broadcast no later than the deadline whatever the price. No key is ever sent here.
+          Paste a signed transaction (cast, ethers, wallet) or an existing Pharos transaction hash. It is held until the
+          base fee is at or below your target, and released no later than the deadline whatever the price. No key is ever sent here.
         </p>
         <form id="holdForm" novalidate>
           <label>
-            <span>signed transaction <em>0x…</em></span>
-            <textarea id="rawTx" name="rawTx" rows="3" spellcheck="false" autocomplete="off" placeholder="0x02f8…"></textarea>
+            <span>signed transaction or Pharos tx hash <em>0x…</em></span>
+            <textarea id="rawTx" name="rawTx" rows="3" spellcheck="false" autocomplete="off" placeholder="0x02f8… or 0xd3750bf5…"></textarea>
           </label>
           <div class="grid">
             <label>

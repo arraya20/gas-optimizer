@@ -102,14 +102,44 @@ const pushEvent = (job, now, type, message) => {
   if (job.events.length > 40) job.events.splice(1, job.events.length - 40); // keep the first event (creation)
 };
 
+const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
+
+async function loadOnChainTx(rpc, hash) {
+  const raw = await rpc.call("eth_getTransactionByHash", [hash]);
+  if (!raw) {
+    throw new InputError(`transaction ${hash} was not found on Pharos`, "rawTx");
+  }
+  const type = raw.type ? Number(BigInt(raw.type)) : 0;
+  const flatPrice = type !== 2;
+  const maxFeeWei = toBigInt(raw.maxFeePerGas ?? raw.gasPrice ?? "0x0", "maxFeePerGas");
+  const tipWei = flatPrice ? maxFeeWei : toBigInt(raw.maxPriorityFeePerGas ?? "0x0", "maxPriorityFeePerGas");
+  const gasLimit = toBigInt(raw.gas ?? raw.gasLimit ?? "0x0", "gasLimit");
+  const chainId = raw.chainId ? toBigInt(raw.chainId, "chainId") : BigInt(await rpc.chainId());
+  return {
+    kind: type === 2 ? "eip1559" : type === 1 ? "eip2930" : "legacy",
+    type,
+    hash: raw.hash ?? hash,
+    chainId,
+    nonce: toBigInt(raw.nonce ?? "0x0", "nonce"),
+    gasLimit,
+    to: raw.to ?? null,
+    value: toBigInt(raw.value ?? "0x0", "value"),
+    maxFeeWei,
+    tipWei,
+    flatPrice,
+    alreadyOnChain: true,
+  };
+}
+
 /**
- * Build a job from a signed transaction. Reads the chain twice: the chain id,
- * so a transaction signed for another network is refused rather than relayed,
- * and the base fee, which becomes the "price at request time".
+ * Build a job from a signed transaction (or an existing Pharos tx hash). Reads
+ * the chain twice: the chain id, so a transaction signed for another network is
+ * refused rather than relayed, and the base fee, which becomes the "price at
+ * request time".
  */
 export async function createJob({ rpc, body, now, id, config = DEFAULTS }) {
   const req = validateJobRequest(body, now, config);
-  const tx = decodeRawTx(req.rawTx);
+  const tx = TX_HASH_RE.test(req.rawTx) ? await loadOnChainTx(rpc, req.rawTx) : decodeRawTx(req.rawTx);
 
   if (tx.chainId == null) {
     throw new InputError("rawTx is a pre-EIP-155 transaction with no chain id; it could replay on another network", "rawTx");
@@ -124,10 +154,19 @@ export async function createJob({ rpc, body, now, id, config = DEFAULTS }) {
   if (baseStr == null) throw new RpcError("the base fee could not be read, so no price at request time can be recorded");
   const base = BigInt(baseStr);
 
-  const quotePrice = pricePerGas(tx, base);
+  // For a raw signed transaction, quote what its fee parameters would pay at the
+  // current base fee. For an existing tx hash, quote the current base fee itself
+  // so settlement compares what the transaction actually paid on-chain against
+  // the minimal network price at request time.
+  const quotePrice = tx.alreadyOnChain ? base : pricePerGas(tx, base);
   const target = req.targetBaseFeeWei ?? base;
 
   const warnings = [];
+  if (tx.alreadyOnChain) {
+    warnings.push(
+      "input is an on-chain transaction hash: it will be held until your target or deadline, then settled against its Pharos receipt",
+    );
+  }
   if (!tx.flatPrice && tx.maxFeeWei < base) {
     warnings.push(
       `maxFeePerGas ${formatGwei(tx.maxFeeWei)} gwei is below the current base fee ${formatGwei(base)} gwei: the transaction cannot be included until the base fee falls to it`,
@@ -146,7 +185,7 @@ export async function createJob({ rpc, body, now, id, config = DEFAULTS }) {
     deadlineAt: req.deadlineAt,
     status: "HOLDING",
     mode: req.dryRun ? "dryRun" : "live",
-    rawTx: req.rawTx,
+    rawTx: tx.alreadyOnChain ? null : req.rawTx,
     tx: {
       hash: tx.hash,
       kind: tx.kind,
@@ -157,6 +196,7 @@ export async function createJob({ rpc, body, now, id, config = DEFAULTS }) {
       maxFeeWei: tx.maxFeeWei.toString(),
       tipWei: tx.tipWei.toString(),
       flatPrice: tx.flatPrice,
+      alreadyOnChain: Boolean(tx.alreadyOnChain),
     },
     quote: {
       at: now,
@@ -231,6 +271,18 @@ async function doSubmit(job, rpc, baseFeeWei, now, config, reason) {
   job.submit = job.submit ?? { reason, attempts: 0 };
   job.submit.attempts += 1;
   const attempt = job.submit.attempts;
+
+  if (job.tx.alreadyOnChain && job.mode !== "dryRun") {
+    markSubmitted(job, now, baseFeeWei, job.tx.hash, config);
+    pushEvent(job, now, "SUBMITTED", `released (${reason}): ${job.tx.hash}`);
+    try {
+      const receipt = await rpc.call("eth_getTransactionReceipt", [job.tx.hash]);
+      if (receipt) settle(job, receipt, now);
+    } catch (err) {
+      job.lastError = String(err?.message ?? err).slice(0, 300);
+    }
+    return;
+  }
 
   if (attempt > 1 && (await lookupByHash(rpc, job.tx.hash))) {
     // An earlier attempt timed out after the node accepted it.

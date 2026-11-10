@@ -64,7 +64,10 @@ function fakeRpc(state) {
           state.onChain = true;
           return state.returnHash ?? decodeRawTx(params[0]).hash;
         }
-        case "eth_getTransactionByHash": return state.onChain ? { hash: params[0] } : null;
+        case "eth_getTransactionByHash": {
+          if (state.txByHash) return state.txByHash;
+          return state.onChain ? { hash: params[0] } : null;
+        }
         case "eth_getTransactionReceipt": return state.receipt ?? null;
         default: throw new RpcError(`method ${method} not found`, { method, code: -32601 });
       }
@@ -539,6 +542,46 @@ test("the Durable Object serves the API and arms an alarm that runs the engine",
   eq((await obj.fetch(new Request("https://x/api/jobs/" + "0".repeat(32)))).status, 404);
   eq((await obj.fetch(new Request("https://x/api/jobs", { method: "POST", body: "{" }))).status, 400);
   eq((await obj.fetch(new Request("https://x/api/jobs", { method: "POST", body: "x".repeat(20_000) }))).status, 400);
+});
+
+test("accepts a 32-byte on-chain Pharos tx hash, holds until favorable or deadline, and settles against its receipt", async () => {
+  const txHash = "0xd3750bf50a417ab0cfab0586227367a3aec39c967946d4f1439e1760c3e96ff4";
+  const state = {
+    baseFee: 10n * GWEI,
+    txByHash: {
+      hash: txHash,
+      type: "0x2",
+      chainId: hex(1672n),
+      nonce: "0x26",
+      gas: hex(1_000_000n),
+      maxFeePerGas: hex(20_281_648_221n),
+      maxPriorityFeePerGas: hex(10_281_648_221n),
+      to: "0x802b65b5d90a66ebe2f7f161da632fb97c2f3f53",
+      value: "0x0",
+    },
+    receipt: {
+      status: "0x1",
+      gasUsed: hex(80_103n),
+      effectiveGasPrice: hex(20_281_648_221n),
+      blockNumber: hex(22_618_822),
+    },
+  };
+  const rpc = fakeRpc(state);
+  let job = await createJob({
+    rpc,
+    body: { rawTx: txHash, deadlineMinutes: 10 },
+    now: NOW,
+    id: "b".repeat(32),
+  });
+  eq(job.tx.alreadyOnChain, true);
+  eq(job.tx.hash, txHash);
+  eq(job.quote.pricePerGasGwei, "10");
+
+  job = await tick(job, { rpc, now: NOW + 1000 });
+  eq(job.status, "SETTLED");
+  eq(job.settlement.outcome, "EXTRA");
+  eq(job.settlement.gasUsed, "80103");
+  eq(job.settlement.blockNumber, 22_618_822);
 });
 
 process.exit(await run());

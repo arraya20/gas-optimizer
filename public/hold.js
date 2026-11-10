@@ -11,6 +11,41 @@ const TERMINAL = new Set(["SETTLED", "REVERTED", "UNCONFIRMED", "SIMULATED", "FA
 let pollTimer = null;
 let seq = 0;
 let currentId = null;
+const jobCache = new Map();
+
+function saveCachedJob(job, rawTx) {
+  if (!job?.id) return;
+  const prev = loadCachedJob(job.id);
+  const keepRaw = job.status === "HOLDING" ? (rawTx ?? prev?.rawTx ?? null) : null;
+  const entry = keepRaw ? { ...job, rawTx: keepRaw } : { ...job };
+  jobCache.set(job.id, entry);
+  try {
+    sessionStorage.setItem(`job:${job.id}`, JSON.stringify(entry));
+  } catch {
+    // sessionStorage may be unavailable in private contexts
+  }
+}
+
+function loadCachedJob(id) {
+  if (jobCache.has(id)) return jobCache.get(id);
+  try {
+    const raw = sessionStorage.getItem(`job:${id}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      jobCache.set(id, parsed);
+      return parsed;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return null;
+}
+
+function stateHeaders(id) {
+  const cached = loadCachedJob(id);
+  if (!cached) return {};
+  return { "x-job-state": encodeURIComponent(JSON.stringify(cached)) };
+}
 
 const NOTES = {
   HOLDING: "waiting for the base fee to reach the target, or for the deadline",
@@ -117,7 +152,9 @@ $("holdForm").addEventListener("submit", async (event) => {
       showError(payload?.error ? `${payload.kind ?? "error"}: ${payload.error}` : `HTTP ${res.status}`);
       return;
     }
-    $("rawTx").value = ""; // the signed transaction has no further use in the page
+    const submittedRawTx = body.rawTx;
+    $("rawTx").value = ""; // the signed transaction has no further use in the form
+    saveCachedJob(payload, /^0x[0-9a-fA-F]{64}$/.test(submittedRawTx) ? null : submittedRawTx);
     follow(payload.id);
   } catch (err) {
     showError(`request failed: ${err.message}`);
@@ -129,9 +166,13 @@ $("holdForm").addEventListener("submit", async (event) => {
 
 $("jobCancel").addEventListener("click", async () => {
   if (!currentId) return;
-  const res = await fetch(`/api/jobs/${currentId}`, { method: "DELETE" });
+  const res = await fetch(`/api/jobs/${currentId}`, {
+    method: "DELETE",
+    headers: stateHeaders(currentId),
+  });
   const payload = await res.json().catch(() => null);
   if (!res.ok) showError(payload?.error ?? `HTTP ${res.status}`);
+  else if (payload?.id) saveCachedJob(payload);
   poll();
 });
 
@@ -145,13 +186,16 @@ function follow(id) {
 async function poll() {
   const mine = ++seq;
   try {
-    const res = await fetch(`/api/jobs/${currentId}`);
+    const res = await fetch(`/api/jobs/${currentId}`, {
+      headers: stateHeaders(currentId),
+    });
     const job = await res.json().catch(() => null);
     if (mine !== seq) return;
     if (!res.ok) {
       showError(job?.error ?? `HTTP ${res.status}`);
       return;
     }
+    saveCachedJob(job);
     renderJob(job);
     if (!TERMINAL.has(job.status)) pollTimer = setTimeout(poll, 4000);
     else loadHistory();

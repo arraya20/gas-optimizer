@@ -14,7 +14,8 @@ import { createRpc, RpcError } from "../../src/rpc.mjs";
 import { InputError } from "../../src/numbers.mjs";
 
 const MAX_SAMPLE = 60;
-const DEFAULT_SAMPLE = 40;
+const DEFAULT_SAMPLE = 20;
+const MAX_RECEIPTS = 18;
 
 // Blocks between sampled headers. 60 blocks at this spacing covers ~47k blocks:
 // wide enough that the sample is not one burst of activity, cheap enough that the
@@ -51,10 +52,16 @@ export async function onRequestPost({ request, env }) {
     ? Math.min(Math.max(Math.trunc(requested), 1), MAX_SAMPLE)
     : DEFAULT_SAMPLE;
 
-  const rpc = createRpc({ url: env?.PHAROS_RPC || undefined, retries: 1, timeoutMs: 12000 });
+  const rpc = createRpc({ url: env?.PHAROS_RPC || undefined, retries: 0, timeoutMs: 12000 });
 
   try {
-    const report = await analyze({ rpc, request: tx, sampleBlocks, stride: SAMPLE_STRIDE });
+    const report = await analyze({
+      rpc,
+      request: tx,
+      sampleBlocks,
+      stride: SAMPLE_STRIDE,
+      maxReceipts: MAX_RECEIPTS,
+    });
     return json(
       {
         ...report,
