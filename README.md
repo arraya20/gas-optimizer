@@ -269,7 +269,8 @@ Verification status, stated plainly:
 - `wrangler deploy --dry-run` bundles the Worker and both bindings.
 - The engine, Durable Object shell and alarm logic are covered by `test/hold.test.mjs`
   on a scripted node and a virtual clock.
-- **Not yet done:** a deploy to a public URL, and a live broadcast of a real signed
-  transaction on Pharos. Both need a Cloudflare login and a funded key, which this
-  repo does not hold. Do both and record the tx hash before claiming the
-  end-to-end path.
+- Deployed at `https://gas-fee-optimizer.nodearraya.workers.dev`: `/`, `GET /api/history`
+  (alarm sampling the Pharos head every 60 s), `POST /api/analyze`, and `POST /api/jobs`
+  + alarm execution verified in `dryRun` mode for both `FAVORABLE` and `DEADLINE`.
+- **Not yet done:** a live broadcast of a funded signed transaction on Pharos (requires
+  a funded key, which this repo does not hold).
